@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!-- ── Primary meta ─────────────────────────────────────────────── -->
+    <title>CenterAI — Enterprise AI Voice Infrastructure in Jordan, built for MENA</title>
+    <meta
+      name="description"
+      content="CenterAI builds enterprise AI voice infrastructure headquartered in Jordan and engineered for MENA. Arabic-first voice agents designed for sub-300ms response latency, an expressive voice library, broad language coverage, and direct PSTN plus SIM routing. Product positioning — no customer results or SLA figures are claimed."
+    />
+    <meta name="author" content="CenterAI" />
+    <meta name="publisher" content="CenterAI" />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
+    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="format-detection" content="telephone=no" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+
+    <!-- TODO before launch: replace https://centerai.jo with the production origin. -->
+    <link rel="canonical" href="https://centerai.jo/" />
+    <link rel="alternate" hreflang="en" href="https://centerai.jo/" />
+    <link rel="alternate" hreflang="ar" href="https://centerai.jo/ar" />
+    <link rel="alternate" hreflang="x-default" href="https://centerai.jo/" />
+
+    <!-- ── Open Graph ───────────────────────────────────────────────── -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="CenterAI" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:locale:alternate" content="ar_JO" />
+    <meta property="og:url" content="https://centerai.jo/" />
+    <meta property="og:title" content="CenterAI — Enterprise AI Voice Infrastructure" />
+    <meta
+      property="og:description"
+      content="AI voice agents for banking, finance, healthcare, legal and enterprise operations. Arabic-first, direct PSTN and SIM routing. Built in Jordan, ready for MENA."
+    />
+    <meta
+      property="og:image"
+      content="https://images.pexels.com/photos/2881229/pexels-photo-2881229.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=630&w=1200"
+    />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="Network cabling patched into a rack inside a telecoms data hall, shown in black and white"
+    />
+
+    <!-- ── Twitter / X ──────────────────────────────────────────────── -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <!-- TODO: replace with the real X handle before launch (omitted rather than invented). -->
+    <meta name="twitter:title" content="CenterAI — Enterprise AI Voice Infrastructure" />
+    <meta
+      name="twitter:description"
+      content="Arabic-first AI voice agents for banking, finance and high-volume operations. Designed for sub-300ms turns, with direct PSTN and SIM routing."
+    />
+    <meta
+      name="twitter:image"
+      content="https://images.pexels.com/photos/2881229/pexels-photo-2881229.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=630&w=1200"
+    />
+    <meta
+      name="twitter:image:alt"
+      content="Black and white photograph of telecoms network cabling in a data hall"
+    />
+
+    <!-- ── Icons & app manifest ─────────────────────────────────────── -->
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23000'/%3E%3Cg fill='%23fff'%3E%3Crect x='8' y='13' width='2.6' height='6' rx='1.3'/%3E%3Crect x='12.4' y='9' width='2.6' height='14' rx='1.3'/%3E%3Crect x='16.8' y='11.5' width='2.6' height='9' rx='1.3'/%3E%3Crect x='21.2' y='14' width='2.6' height='4' rx='1.3'/%3E%3C/g%3E%3C/svg%3E"
+    />
+    <link
+      rel="apple-touch-icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%23000'/%3E%3Cg fill='%23fff'%3E%3Crect x='44' y='74' width='14' height='32' rx='7'/%3E%3Crect x='68' y='50' width='14' height='80' rx='7'/%3E%3Crect x='92' y='62' width='14' height='56' rx='7'/%3E%3Crect x='116' y='76' width='14' height='28' rx='7'/%3E%3C/g%3E%3C/svg%3E"
+    />
+    <link
+      rel="mask-icon"
+      color="#000000"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cg fill='%23000'%3E%3Crect x='8' y='13' width='2.6' height='6' rx='1.3'/%3E%3Crect x='12.4' y='9' width='2.6' height='14' rx='1.3'/%3E%3Crect x='16.8' y='11.5' width='2.6' height='9' rx='1.3'/%3E%3Crect x='21.2' y='14' width='2.6' height='4' rx='1.3'/%3E%3C/g%3E%3C/svg%3E"
+    />
+    <link rel="manifest" href="/site.webmanifest" />
+
+    <!-- ── Fonts ────────────────────────────────────────────────────── -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Preconnect to the image CDN so lazy-loaded photography starts fetching earlier. -->
+    <link rel="preconnect" href="https://images.pexels.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@300;400;500;600;700&family=Cairo:wght@400;500;600;700&display=swap"
+    />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "Organization",
+            "@id": "https://centerai.jo/#organization",
+            "name": "CenterAI",
+            "url": "https://centerai.jo/",
+            "description": "Enterprise AI voice infrastructure company headquartered in Jordan and built for MENA.",
+            "foundingLocation": { "@type": "Place", "name": "Amman, Jordan" },
+            "areaServed": [
+              { "@type": "Place", "name": "Jordan" },
+              { "@type": "Place", "name": "Middle East and North Africa" }
+            ],
+            "contactPoint": {
+              "@type": "ContactPoint",
+              "email": "hello@centerai.jo",
+              "contactType": "sales",
+              "areaServed": "MENA",
+              "availableLanguage": ["en", "ar"]
+            }
+          },
+          {
+            "@type": "WebSite",
+            "@id": "https://centerai.jo/#website",
+            "url": "https://centerai.jo/",
+            "name": "CenterAI",
+            "inLanguage": ["en", "ar"],
+            "publisher": { "@id": "https://centerai.jo/#organization" }
+          },
+          {
+            "@type": "SoftwareApplication",
+            "name": "CenterAI Voice Platform",
+            "applicationCategory": "BusinessApplication",
+            "applicationSubCategory": "Enterprise AI voice infrastructure",
+            "url": "https://centerai.jo/#platform",
+            "publisher": { "@id": "https://centerai.jo/#organization" },
+            "featureList": [
+              "Inbound and outbound AI voice agents",
+              "Arabic-first speech recognition and dialect handling",
+              "Expressive voice library with tone, speed and emotion controls",
+              "Voice cloning with consent and approval gates",
+              "Automated outbound voice campaigns",
+              "Direct PSTN termination and real SIM card routing"
+            ],
+            "offers": {
+              "@type": "Offer",
+              "price": "0",
+              "priceCurrency": "JOD",
+              "description": "Usage-based and quoted per scope. No public rate card is published; pricing is confirmed with sales.",
+              "availability": "https://schema.org/InStock",
+              "seller": { "@id": "https://centerai.jo/#organization" }
+            }
+          }
+        ]
+      }
+    </script>
+
+    <style>
+      /* Pre-hydration skeleton: matches the shell so first paint is never a blank page. */
+      #boot {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        gap: 18px;
+        background: #fff;
+        font-family: "Saira Condensed", Arial, sans-serif;
+        z-index: 200;
+      }
+      #boot .bars {
+        display: flex;
+        align-items: flex-end;
+        gap: 4px;
+        height: 26px;
+      }
+      #boot .bars i {
+        width: 3px;
+        height: 100%;
+        background: #000;
+        border-radius: 2px;
+        opacity: 0.15;
+        animation: boot 1.1s ease-in-out infinite;
+      }
+      #boot .bars i:nth-child(2) { animation-delay: 0.12s }
+      #boot .bars i:nth-child(3) { animation-delay: 0.24s }
+      #boot .bars i:nth-child(4) { animation-delay: 0.36s }
+      #boot .bars i:nth-child(5) { animation-delay: 0.48s }
+      #boot span {
+        font-size: 11px;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: #9ca3af;
+      }
+      @keyframes boot {
+        0%, 100% { transform: scaleY(0.25); opacity: 0.15 }
+        50% { transform: scaleY(1); opacity: 0.9 }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #boot .bars i { animation: none; opacity: 0.5 }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div id="boot" aria-hidden="true">
+        <div class="bars"><i></i><i></i><i></i><i></i><i></i></div>
+        <span>Loading CenterAI</span>
+      </div>
+      <noscript>
+        <div style="max-width: 46rem; margin: 0 auto; padding: 6rem 1.5rem; font-family: system-ui">
+          <h1 style="font-size: 2rem">CenterAI — Enterprise AI Voice Infrastructure</h1>
+          <p>
+            This site requires JavaScript for the interactive product demonstration. CenterAI builds
+            Arabic-first enterprise voice agents in Amman, Jordan. For a demo or pricing, email
+            <a href="mailto:hello@centerai.jo">hello@centerai.jo</a>.
+          </p>
+        </div>
+      </noscript>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
