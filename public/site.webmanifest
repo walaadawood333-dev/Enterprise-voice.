@@ -1,0 +1,22 @@
+{
+  "name": "CenterAI — Enterprise AI Voice Infrastructure",
+  "short_name": "CenterAI",
+  "description": "Arabic-first enterprise AI voice agents. Built in Jordan for MENA.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#ffffff",
+  "theme_color": "#000000",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["business", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='112' fill='%23000'/%3E%3Cg fill='%23fff'%3E%3Crect x='128' y='208' width='42' height='96' rx='21'/%3E%3Crect x='192' y='144' width='42' height='224' rx='21'/%3E%3Crect x='256' y='176' width='42' height='160' rx='21'/%3E%3Crect x='320' y='216' width='42' height='80' rx='21'/%3E%3C/g%3E%3C/svg%3E",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

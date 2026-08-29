@@ -1,0 +1,216 @@
+// CenterAI — production schema (PostgreSQL, Prisma 7).
+//
+//   npx prisma generate
+//   npx prisma migrate deploy      # or: npx prisma db push  (dev only)
+//
+// Tenant isolation rule: every organization-owned table carries organizationId, every
+// repository read/write composes it into the where clause, and there is no unscoped accessor.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrgStatus {
+  ACTIVE
+  TRIAL
+  SUSPENDED
+}
+
+enum UserRole {
+  OWNER
+  ADMIN
+  MANAGER
+  OPERATOR
+  VIEWER
+}
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  DISABLED
+}
+
+enum Industry {
+  BANKING
+  FINANCE
+  HEALTHCARE
+  LEGAL
+  ENTERPRISE_SERVICES
+}
+
+enum AgentLanguage {
+  EN
+  AR
+  JO
+}
+
+enum AgentStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+enum SessionStatus {
+  CREATED
+  ACTIVE
+  COMPLETED
+  FAILED
+}
+
+enum EngineMode {
+  DEMO
+  PRODUCTION
+}
+
+enum VoiceEngine {
+  DEMO
+  OPENAI
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum UsageEventType {
+  VOICE_SESSION
+  MESSAGE
+  AI_REQUEST
+  CHARACTERS
+  AUDIO_SECONDS
+  INPUT_MESSAGES
+  OUTPUT_MESSAGES
+  SESSION_STARTED
+  SESSION_ENDED
+  SESSION_COMPLETED
+  SESSION_FAILED
+}
+
+model Organization {
+  id        String    @id @default(cuid())
+  name      String
+  slug      String     @unique
+  status    OrgStatus  @default(TRIAL)
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @updatedAt @map("updated_at")
+
+  users    User[]
+  agents   Agent[]
+  sessions VoiceSession[]
+  usage    UsageEvent[]
+
+  @@map("organizations")
+}
+
+model User {
+  id             String     @id @default(cuid())
+  organizationId String     @map("organization_id")
+  email          String     @unique
+  name           String
+  role           UserRole   @default(VIEWER)
+  status         UserStatus @default(ACTIVE)
+  /// bcrypt digest — never selected into an API response.
+  passwordHash   String?    @map("password_hash")
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sessions     VoiceSession[]
+
+  @@index([organizationId])
+  @@map("users")
+}
+
+model Agent {
+  id             String        @id @default(cuid())
+  organizationId String        @map("organization_id")
+  name           String
+  description    String        @default("")
+  industry       Industry      @default(BANKING)
+  language       AgentLanguage @default(EN)
+  voice          String        @default("layla-service")
+  systemPrompt   String        @default("") @map("system_prompt")
+  welcomeMessage String        @default("") @map("welcome_message")
+  status         AgentStatus   @default(DRAFT)
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sessions     VoiceSession[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId, status])
+  @@map("agents")
+}
+
+model VoiceSession {
+  id              String         @id @default(cuid())
+  organizationId  String         @map("organization_id")
+  agentId         String         @map("agent_id")
+  userId          String?        @map("user_id")
+  language        AgentLanguage
+  status          SessionStatus  @default(CREATED)
+  mode            EngineMode     @default(DEMO)
+  engine          VoiceEngine    @default(DEMO)
+  /// Studio Test Mode may exercise a draft agent.
+  testMode        Boolean        @default(false) @map("test_mode")
+  startedAt       DateTime       @default(now()) @map("started_at")
+  endedAt         DateTime?      @map("ended_at")
+  /// Seconds; null until the session closes.
+  durationSeconds Int?           @map("duration_seconds")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  agent        Agent        @relation(fields: [agentId], references: [id], onDelete: Restrict)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  messages     Message[]
+  usage        UsageEvent[]
+
+  @@index([organizationId, startedAt])
+  @@index([organizationId, status])
+  @@index([agentId])
+  @@map("voice_sessions")
+}
+
+model Message {
+  id             String      @id @default(cuid())
+  organizationId String      @map("organization_id")
+  sessionId      String      @map("session_id")
+  role           MessageRole
+  content        String
+  /// Provider latency for the reply; not a public performance figure.
+  latencyMs      Int?        @map("latency_ms")
+  createdAt      DateTime    @default(now()) @map("timestamp")
+
+  session VoiceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([organizationId, createdAt])
+  @@map("messages")
+}
+
+model UsageEvent {
+  id             String         @id @default(cuid())
+  organizationId String         @map("organization_id")
+  sessionId      String?        @map("session_id")
+  eventType      UsageEventType @map("event_type")
+  /// Count for event-style metrics, seconds for audio/duration events.
+  quantity       Decimal        @default(0) @db.Decimal(18, 4)
+  metadata       Json           @default("{}")
+  createdAt      DateTime       @default(now()) @map("created_at")
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  session      VoiceSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([sessionId])
+  @@index([organizationId, eventType])
+  @@map("usage_events")
+}

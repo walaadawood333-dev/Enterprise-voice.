@@ -1,0 +1,8 @@
+# CenterAI — https://centerai.jo
+User-agent: *
+Allow: /
+
+# Hosted assets that should not be indexed
+Disallow: /src/
+
+Sitemap: https://centerai.jo/sitemap.xml
