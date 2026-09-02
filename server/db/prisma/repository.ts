@@ -11,6 +11,11 @@
 
 import type {
   AgentRow,
+  CallDirection,
+  CallEventRow,
+  CallEventType,
+  CallRow,
+  CallStatus,
   MessageRow,
   OrganizationRow,
   OrgRole,
@@ -141,6 +146,45 @@ const toUsage = (row: Record<string, unknown> | null): UsageEventRow | undefined
       }
     : undefined;
 
+const toCall = (row: Record<string, unknown> | null): CallRow | undefined =>
+  row
+    ? {
+        id: str(row, "id"),
+        organizationId: str(row, "organizationId"),
+        agentId: str(row, "agentId") || null,
+        voiceSessionId: str(row, "voiceSessionId") || null,
+        provider: str(row, "provider"),
+        providerCallId: str(row, "providerCallId") || null,
+        direction: lower(row.direction) as CallDirection,
+        status: lower(row.status) as CallStatus,
+        fromNumber: str(row, "fromNumber") || null,
+        toNumber: str(row, "toNumber") || null,
+        startedAt: iso(row, "startedAt"),
+        answeredAt: isoOrNull(row, "answeredAt"),
+        endedAt: isoOrNull(row, "endedAt"),
+        durationSeconds: row?.durationSeconds == null ? null : num(row, "durationSeconds"),
+        createdAt: iso(row, "createdAt"),
+        updatedAt: iso(row, "updatedAt"),
+      }
+    : undefined;
+
+const toCallEvent = (row: Record<string, unknown> | null): CallEventRow | undefined =>
+  row
+    ? {
+        id: str(row, "id"),
+        organizationId: str(row, "organizationId"),
+        callId: str(row, "callId"),
+        eventType: lower(row.eventType) as CallEventType,
+        provider: str(row, "provider"),
+        providerEventId: str(row, "providerEventId") || null,
+        metadata:
+          row.metadata && typeof row.metadata === "object"
+            ? (row.metadata as Record<string, string | number | boolean | null>)
+            : {},
+        createdAt: iso(row, "createdAt"),
+      }
+    : undefined;
+
 /** Aggregation is done with findMany + reduce to stay driver-agnostic on Decimal handling. */
 async function summarize(
   usage: PrismaDelegate,
@@ -180,7 +224,7 @@ export interface PrismaDbOptions {
 
 export async function createPrismaDb(options: PrismaDbOptions = {}): Promise<Db> {
   const client = options.client ?? (await loadPrismaClient());
-  const { organization, user, agent, voiceSession, message, usageEvent } = client;
+  const { organization, user, agent, voiceSession, message, usageEvent, call, callEvent } = client;
 
   return {
     driver: "postgres",
@@ -371,6 +415,75 @@ export async function createPrismaDb(options: PrismaDbOptions = {}): Promise<Db>
           .map(toUsage)
           .filter(Boolean) as UsageEventRow[],
       summarize: (organizationId, sessionId) => summarize(usageEvent, organizationId, sessionId),
+    },
+
+    calls: {
+      create: async (input) =>
+        toCall(
+          await call.create({
+            data: {
+              id: input.id,
+              organizationId: input.organizationId,
+              agentId: input.agentId,
+              voiceSessionId: input.voiceSessionId,
+              provider: input.provider,
+              providerCallId: input.providerCallId,
+              direction: upper(input.direction),
+              status: upper(input.status),
+              fromNumber: input.fromNumber,
+              toNumber: input.toNumber,
+            },
+          })
+        )!,
+      get: async (id, organizationId) =>
+        toCall(await call.findFirst({ where: { id, organizationId } })),
+      listByOrg: async (organizationId) =>
+        (await call.findMany({
+          where: { organizationId },
+          orderBy: { startedAt: "desc" },
+        }))
+          .map(toCall)
+          .filter(Boolean) as CallRow[],
+      findByProviderCallId: async (provider, providerCallId) =>
+        toCall(await call.findFirst({ where: { provider, providerCallId } })),
+      update: async (id, organizationId, changes) => {
+        const data: Record<string, unknown> = { updatedAt: new Date() };
+        if (changes.status !== undefined) data.status = upper(changes.status);
+        if (changes.agentId !== undefined) data.agentId = changes.agentId;
+        if (changes.voiceSessionId !== undefined) data.voiceSessionId = changes.voiceSessionId;
+        if (changes.answeredAt !== undefined) data.answeredAt = changes.answeredAt ? new Date(changes.answeredAt) : null;
+        if (changes.endedAt !== undefined) data.endedAt = changes.endedAt ? new Date(changes.endedAt) : null;
+        if (changes.durationSeconds !== undefined) data.durationSeconds = changes.durationSeconds;
+        const result = await call.updateMany({ where: { id, organizationId }, data });
+        if (result.count === 0) return undefined;
+        return toCall(await call.findFirst({ where: { id, organizationId } }));
+      },
+    },
+
+    callEvents: {
+      create: async (input) =>
+        toCallEvent(
+          await callEvent.create({
+            data: {
+              id: input.id,
+              organizationId: input.organizationId,
+              callId: input.callId,
+              eventType: upper(input.eventType),
+              provider: input.provider,
+              providerEventId: input.providerEventId,
+              metadata: input.metadata as Record<string, never>,
+            },
+          })
+        )!,
+      listByCall: async (callId) =>
+        (await callEvent.findMany({
+          where: { callId },
+          orderBy: { createdAt: "asc" },
+        }))
+          .map(toCallEvent)
+          .filter(Boolean) as CallEventRow[],
+      findByProviderEventId: async (provider, providerEventId) =>
+        toCallEvent(await callEvent.findFirst({ where: { provider, providerEventId } })),
     },
 
     reset: async () => {

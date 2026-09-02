@@ -36,6 +36,8 @@ export interface PrismaClientLike {
   voiceSession: PrismaDelegate;
   message: PrismaDelegate;
   usageEvent: PrismaDelegate;
+  call: PrismaDelegate;
+  callEvent: PrismaDelegate;
   $connect?(): Promise<unknown>;
   $disconnect?(): Promise<unknown>;
 }

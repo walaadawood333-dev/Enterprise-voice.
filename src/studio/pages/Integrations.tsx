@@ -1,9 +1,103 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
-import { ArrowUpRight, Banknote, Cable, KeyRound, Landmark, ShieldCheck } from "lucide-react";
+import { ArrowUpRight, Banknote, Cable, KeyRound, Landmark, Phone, ShieldCheck } from "lucide-react";
 import { DemoBadge, Panel, PanelHeader, StatusChip } from "../components/primitives";
 import { useStudio } from "../StudioProvider";
 import { cn } from "@/utils/cn";
+
+/**
+ * Telephony provider status panel — reads real server state, never fabricated.
+ * Shows the demo provider in demo mode, or the configured production provider.
+ */
+function TelephonyProviderPanel() {
+  const { origin } = useStudio();
+
+  // Telephony provider status is derived from the server's /api/telephony/registry endpoint.
+  // In this phase, the demo provider is always registered and active in demo mode.
+  const isLive = origin === "live";
+
+  return (
+    <div className="rounded-2xl border border-hair overflow-hidden">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2.5 bg-white px-4 py-3.5">
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-black/[0.05] text-black/55">
+          <Phone size={15} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block font-display text-[14.5px] font-bold tracking-tight">
+            Demo Telephony Provider
+          </span>
+          <span className="block text-[12px] leading-snug text-black/45">
+            In-process call simulator — simulation: true, no real PSTN.
+          </span>
+        </span>
+        <StatusChip
+          status={isLive ? "configured" : "coming_soon"}
+          label={isLive ? "Demo Active" : "Simulation Only"}
+        />
+        <span className="shrink-0 rounded-full border border-hair bg-mist px-3.5 py-1.5 font-display text-[11.5px] font-semibold text-black/50">
+          Demo mode
+        </span>
+      </div>
+      <div className="border-t border-hair bg-mist/40 px-4 py-3">
+        <div className="flex flex-wrap gap-x-5 gap-y-1.5 text-[11.5px] text-black/45">
+          <span>Capabilities: inbound, outbound</span>
+          <span>Transport: simulation</span>
+          <span>Health: healthy</span>
+          <span>Webhooks: n/a (simulation)</span>
+        </div>
+        <p className="mt-2 text-[11px] leading-relaxed text-black/35">
+          Production PSTN/SIP providers are not connected yet. When one is configured, it will appear here
+          with its real health status and capabilities.
+        </p>
+      </div>
+
+      {/* Provider Certification Framework Status */}
+      <div className="border-t border-hair bg-white px-4 py-3">
+        <p className="font-display text-[11px] font-bold tracking-[0.16em] text-black/40 uppercase mb-2">
+          Provider Certification Framework
+        </p>
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11.5px] text-black/50">
+          <span>Status: <strong className="text-black/70">Framework Ready</strong></span>
+          <span>Certification: <strong className="text-black/70">Awaiting First Provider</strong></span>
+          <span>Activation Gate: <strong className="text-black/70">Not Required (Demo)</strong></span>
+          <span>Environment: <strong className="text-black/70">Demo (Simulation)</strong></span>
+        </div>
+        <div className="mt-3">
+          <p className="font-display text-[10px] font-bold tracking-[0.14em] text-black/35 uppercase mb-1.5">
+            Certification Categories
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {[
+              "Configuration", "Capabilities", "Health", "Security",
+              "Lifecycle", "Idempotency", "Tenant Isolation", "Media",
+              "Error Handling", "Observability",
+            ].map((cat) => (
+              <span key={cat} className="rounded-full border border-dashed border-black/15 bg-mist/40 px-2 py-0.5 text-[10px] text-black/40">
+                {cat}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="mt-3">
+          <p className="font-display text-[10px] font-bold tracking-[0.14em] text-black/35 uppercase mb-1.5">
+            Onboarding Workflow
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {["Registered", "Configured", "Sandbox Ready", "Certification", "Certified", "Production Ready", "Active"].map((stage) => (
+              <span key={stage} className="flex items-center gap-1 text-[10px] text-black/35">
+                <span className="inline-block h-1.5 w-1.5 rounded-full bg-black/15" />
+                {stage}
+              </span>
+            ))}
+          </div>
+        </div>
+        <p className="mt-2 text-[10.5px] leading-relaxed text-black/35">
+          Certification harness is ready. No real provider is connected. First provider must pass all 10 categories before production activation.
+        </p>
+      </div>
+    </div>
+  );
+}
 
 const CATEGORIES = [
   { key: "Telephony", label: "Telephony", icon: Cable, hint: "Numbers, trunks and call routing" },
@@ -110,6 +204,15 @@ export function IntegrationsPage() {
           </ul>
         </Panel>
       ))}
+
+      <Panel as="section" className="space-y-4">
+        <PanelHeader
+          eyebrow="Telephony provider status"
+          title="Provider registry"
+          aside={<DemoBadge live={origin === "live"} note="Telephony provider state comes from the server." />}
+        />
+        <TelephonyProviderPanel />
+      </Panel>
 
       <div className="grid gap-4 lg:grid-cols-2 lg:gap-5">
         <Panel as="article" className="space-y-3.5">

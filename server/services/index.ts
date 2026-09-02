@@ -538,3 +538,47 @@ export function createUsageService(db: Db) {
     },
   };
 }
+
+// ─── Phase 10A — Entitlement & Workspace Bootstrap Services ──────────────
+export { createEntitlementEngine, seedDefaultPlans, DEFAULT_PLANS, type EntitlementEngine, type SubscriptionWithPlan } from "./entitlements";
+export { createWorkspaceBootstrapService, type WorkspaceBootstrapService } from "./workspace";
+
+// ─── Phase 10C — Governance Services ─────────────────────────────────────
+export { createComplianceService, type ComplianceService } from "./compliance";
+export { createDNCService, type DNCService } from "./dnc";
+export { createReportService, type ReportService } from "./reports";
+export { createAuditService, scrubSecrets, type AuditService } from "./audit";
+
+// ─── Phase 10D — QA Evaluation Service ──────────────────────────────────
+export { createQAEvaluationService, type QAEvaluationService } from "./qa";
+
+// ─── Phase 10E — Data Connector Service ─────────────────────────────────
+export { createConnectorService, type ConnectorService } from "./connectors";
+
+// ─── Phase 11 — Contact Center Operations Service ───────────────────────
+export { createOperationsService, type OperationsService } from "./operations";
+
+// ─── Phase 12 — Campaign Execution Engine ───────────────────────────────
+export { createCampaignExecutionService, type CampaignExecutionService } from "./campaignExecution";
+
+
+// ─── Phase 15 — SaaS Billing & Revenue Operations ──────────────────────
+export { createBillingService, type BillingService } from "./billing";
+
+// ─── Phase 17: AI Evaluation ─────────────────────────────────────────────
+export {
+  createAIEvaluationProvider,
+  MockAIEvaluationProvider,
+  type AIEvaluationProviderAdapter,
+} from "./aiEvaluationProvider";
+export {
+  createQAEvaluationServiceExtended,
+  type QAEvaluationServiceExtended,
+} from "./qa";
+
+// ─── Phase 18: Enterprise Reporting & Analytics ──────────────────────────
+export { KPIRegistry, createKPIRegistry, type KPIDefinition, type KPICategory, type DataSource } from "./kpiRegistry";
+export { AnalyticsService, createAnalyticsService, type KPIResult, type DomainAnalytics, type OrganizationAnalytics, type PlatformAnalytics, type TimeRange, type AnalyticsFilter } from "./analytics";
+
+// ─── Phase 19: Platform Admin Service ──────────────────────────────────────
+export { createPlatformAdminService, type PlatformAdminService } from "./platformAdmin";
