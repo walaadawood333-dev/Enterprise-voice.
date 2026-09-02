@@ -4,15 +4,18 @@ import { UIProvider } from "@/context/UIProvider";
 import { PublicSite } from "@/site/PublicSite";
 import { LoginPage, RegisterPage } from "@/auth/AuthScreen";
 import { StudioApp } from "@/studio/StudioApp";
+import { AdminApp } from "@/admin/AdminApp";
+import { WorkspaceApp } from "@/workspace/WorkspaceApp";
 
 /**
  * Entry router.
  *
- * Three surfaces, one design system:
- *   /            → public marketing site (unchanged)
- *   /login, /register → CenterAI sign-in (server-validated identity)
- *   /studio/*    → Agent Studio, protected by a session guard
- * UIProvider is shared so the Book-a-Demo dialog works from any surface.
+ * Multiple surfaces, one design system:
+ *   /            → public marketing site
+ *   /login, /register → CenterAI sign-in
+ *   /studio/*    → Agent Studio (legacy, preserved)
+ *   /admin/*     → Platform Control Plane (Phase 10A)
+ *   /workspace/* → Customer Workspace (Phase 10A)
  */
 export default function App() {
   return (
@@ -27,6 +30,22 @@ export default function App() {
             element={
               <ErrorBoundary label="agent studio">
                 <StudioApp />
+              </ErrorBoundary>
+            }
+          />
+          <Route
+            path="/admin/*"
+            element={
+              <ErrorBoundary label="platform admin">
+                <AdminApp />
+              </ErrorBoundary>
+            }
+          />
+          <Route
+            path="/workspace/*"
+            element={
+              <ErrorBoundary label="customer workspace">
+                <WorkspaceApp />
               </ErrorBoundary>
             }
           />

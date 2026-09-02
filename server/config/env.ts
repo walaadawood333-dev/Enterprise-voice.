@@ -104,8 +104,20 @@ export interface ServerEnv {
 
   crm: { apiKeyPresent: boolean; enabled: boolean; baseUrlPresent: boolean };
 
-  /** Always false in this phase — declared so the UI can never overstate it. */
-  telephony: { configured: false };
+  /** Phase 13 — Telephony provider configuration */
+  telephony: {
+    /** True when at least one production provider is configured and available */
+    configured: boolean;
+    /** Which provider is active (e.g., "signalwire", "demo") */
+    activeProvider: string | null;
+    /** SignalWire-specific configuration (presence only, never values) */
+    signalwire: {
+      projectIdPresent: boolean;
+      apiTokenPresent: boolean;
+      spaceUrlPresent: boolean;
+      webhookSecretPresent: boolean;
+    };
+  };
 
   corsOrigins: string[];
   rateLimit: { windowMs: number; max: number };
@@ -168,6 +180,11 @@ const ALIASES = {
   RATE_LIMIT_MAX: ["RATE_LIMIT_MAX"],
   MAX_BODY_BYTES: ["MAX_BODY_BYTES"],
   NODE_ENV: ["NODE_ENV"],
+  // Phase 13: Telephony provider credentials
+  SIGNALWIRE_PROJECT_ID: ["SIGNALWIRE_PROJECT_ID"],
+  SIGNALWIRE_API_TOKEN: ["SIGNALWIRE_API_TOKEN"],
+  SIGNALWIRE_SPACE_URL: ["SIGNALWIRE_SPACE_URL"],
+  SIGNALWIRE_WEBHOOK_SECRET: ["SIGNALWIRE_WEBHOOK_SECRET"],
 } as const;
 
 type AliasKey = keyof typeof ALIASES;
@@ -182,6 +199,10 @@ export const SECRET_ENV_NAMES = [
   "STORAGE_SECRET_KEY",
   "CRM_API_KEY",
   "DATABASE_URL",
+  // Phase 13: Telephony provider secrets
+  "SIGNALWIRE_PROJECT_ID",
+  "SIGNALWIRE_API_TOKEN",
+  "SIGNALWIRE_WEBHOOK_SECRET",
 ] as const;
 
 const lookup = (src: EnvSource, key: AliasKey): string | undefined => {
@@ -270,6 +291,17 @@ export function resolveEnv(source: EnvSource = readProcessEnv()): ServerEnv {
   const voiceKeyPresent = present(source, "VOICE_PROVIDER_API_KEY");
   const anthropic = present(source, "ANTHROPIC_API_KEY");
   const crmKeyPresent = present(source, "CRM_API_KEY");
+
+  // Phase 13: Telephony provider configuration
+  const signalwireProjectIdPresent = present(source, "SIGNALWIRE_PROJECT_ID");
+  const signalwireApiTokenPresent = present(source, "SIGNALWIRE_API_TOKEN");
+  const signalwireSpaceUrlPresent = present(source, "SIGNALWIRE_SPACE_URL");
+  const signalwireWebhookSecretPresent = present(source, "SIGNALWIRE_WEBHOOK_SECRET");
+  const signalwireFullyConfigured =
+    signalwireProjectIdPresent &&
+    signalwireApiTokenPresent &&
+    signalwireSpaceUrlPresent &&
+    signalwireWebhookSecretPresent;
 
   const storageDriver = oneOf(
     text(source, "STORAGE_DRIVER", "none").toLowerCase(),
@@ -406,7 +438,16 @@ export function resolveEnv(source: EnvSource = readProcessEnv()): ServerEnv {
       enabled: appMode === "production" && crmKeyPresent,
       baseUrlPresent: present(source, "CRM_BASE_URL"),
     },
-    telephony: { configured: false },
+    telephony: {
+      configured: signalwireFullyConfigured,
+      activeProvider: signalwireFullyConfigured ? "signalwire" : null,
+      signalwire: {
+        projectIdPresent: signalwireProjectIdPresent,
+        apiTokenPresent: signalwireApiTokenPresent,
+        spaceUrlPresent: signalwireSpaceUrlPresent,
+        webhookSecretPresent: signalwireWebhookSecretPresent,
+      },
+    },
     corsOrigins: csv(source, "CORS_ORIGINS", ["http://localhost:5173", "http://localhost:4173"]),
     rateLimit: {
       windowMs: numberFrom(source, "RATE_LIMIT_WINDOW_MS", 60_000),
@@ -477,6 +518,10 @@ export function validateStartupConfig(env: ServerEnv): StartupConfig {
     problems.push("STORAGE_BUCKET_NAME + STORAGE_ACCESS_KEY + STORAGE_SECRET_KEY");
   if (env.voice.webhookUrlPresent && !env.voice.webhookSecretPresent)
     problems.push("VOICE_PROVIDER_WEBHOOK_SECRET (WEBHOOK_URL is set)");
+  // Phase 13: Telephony provider validation
+  if (env.appMode === "production" && !env.telephony.configured) {
+    problems.push("SIGNALWIRE_PROJECT_ID + SIGNALWIRE_API_TOKEN + SIGNALWIRE_SPACE_URL + SIGNALWIRE_WEBHOOK_SECRET (production mode requires a telephony provider)");
+  }
 
   return { ok: problems.length === 0, appMode: "production", problems, notes, realtime };
 }

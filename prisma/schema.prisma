@@ -102,27 +102,51 @@ model Organization {
   createdAt DateTime   @default(now()) @map("created_at")
   updatedAt DateTime   @updatedAt @map("updated_at")
 
-  users    User[]
-  agents   Agent[]
-  sessions VoiceSession[]
-  usage    UsageEvent[]
+  users               User[]
+  agents              Agent[]
+  sessions            VoiceSession[]
+  usage               UsageEvent[]
+  calls               Call[]
+  telephonyProviders  OrganizationTelephonyProvider[]
+  subscription        Subscription?
+  branding            OrganizationBranding?
+  campaigns           Campaign[]
+  compliancePolicies  CompliancePolicy[]
+  complianceEvaluations ComplianceEvaluation[]
+  dncRecords          DNCRecord[]
+  qaTemplates         QAEvaluationTemplate[]
+  qaCriteria          QAEvaluationCriterion[]
+  qaEvaluations       QAEvaluation[]
+  qaScores            QAEvaluationScore[]
+  qaFindings          QAFinding[]
+  connectors          DataConnector[]
+  connectorMappings   DataConnectorFieldMapping[]
+  connectorSyncJobs   DataConnectorSyncJob[]
+  connectorActivities DataConnectorActivity[]
+  contactsPhase12     Contact[]
+  campaignContactsPhase12 CampaignContactPhase12[]
+  dialAttemptsPhase12 DialAttempt[]
+  campaignEventsPhase12 CampaignEvent[]
+  retryPoliciesPhase12 RetryPolicy[]
+  campaignSchedulesPhase12 CampaignSchedule[]
 
   @@map("organizations")
 }
 
 model User {
   id             String     @id @default(cuid())
-  organizationId String     @map("organization_id")
+  organizationId String?    @map("organization_id")
   email          String     @unique
   name           String
-  role           UserRole   @default(VIEWER)
+  /// Role can be either platform admin or org role
+  role           String     @default("viewer")
   status         UserStatus @default(ACTIVE)
   /// bcrypt digest — never selected into an API response.
   passwordHash   String?    @map("password_hash")
   createdAt      DateTime   @default(now()) @map("created_at")
   updatedAt      DateTime   @updatedAt @map("updated_at")
 
-  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   sessions     VoiceSession[]
 
   @@index([organizationId])
@@ -145,6 +169,8 @@ model Agent {
 
   organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   sessions     VoiceSession[]
+  calls        Call[]
+  campaigns    Campaign[]
 
   @@unique([organizationId, name])
   @@index([organizationId, status])
@@ -172,6 +198,8 @@ model VoiceSession {
   user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
   messages     Message[]
   usage        UsageEvent[]
+  calls        Call[]
+  qaEvaluations QAEvaluation[]
 
   @@index([organizationId, startedAt])
   @@index([organizationId, status])
@@ -213,4 +241,1002 @@ model UsageEvent {
   @@index([sessionId])
   @@index([organizationId, eventType])
   @@map("usage_events")
+}
+
+enum CallDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum CallStatus {
+  CREATED
+  RINGING
+  ANSWERED
+  ACTIVE
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum CallEventType {
+  CALL_CREATED
+  CALL_RINGING
+  CALL_ANSWERED
+  MEDIA_CONNECTED
+  CALL_COMPLETED
+  CALL_FAILED
+  CALL_CANCELLED
+}
+
+model Call {
+  id              String        @id @default(cuid())
+  organizationId  String        @map("organization_id")
+  agentId         String?       @map("agent_id")
+  voiceSessionId  String?       @map("voice_session_id")
+  provider        String        @default("demo")
+  /// Provider-assigned call identifier; not unique alone because providers can collide.
+  providerCallId  String?       @map("provider_call_id")
+  direction       CallDirection @default(INBOUND)
+  status          CallStatus    @default(CREATED)
+  fromNumber      String?       @map("from_number")
+  toNumber        String?       @map("to_number")
+  startedAt       DateTime      @default(now()) @map("started_at")
+  answeredAt      DateTime?     @map("answered_at")
+  endedAt         DateTime?     @map("ended_at")
+  durationSeconds Int?          @map("duration_seconds")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  agent        Agent?         @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  voiceSession VoiceSession?  @relation(fields: [voiceSessionId], references: [id], onDelete: SetNull)
+  events       CallEvent[]
+
+  @@unique([provider, providerCallId])
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@index([organizationId, startedAt])
+  @@index([agentId])
+  @@map("calls")
+}
+
+model CallEvent {
+  id              String        @id @default(cuid())
+  organizationId  String        @map("organization_id")
+  callId          String        @map("call_id")
+  eventType       CallEventType @map("event_type")
+  provider        String        @default("demo")
+  /// Provider-assigned event identifier; unique per provider to prevent duplicate processing.
+  providerEventId String?       @map("provider_event_id")
+  metadata        Json          @default("{}")
+  createdAt       DateTime      @default(now()) @map("created_at")
+
+  call Call @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerEventId])
+  @@index([callId])
+  @@index([organizationId])
+  @@index([organizationId, createdAt])
+  @@map("call_events")
+}
+
+model OrganizationTelephonyProvider {
+  id                     String   @id @default(cuid())
+  organizationId         String   @map("organization_id")
+  provider               String
+  enabled                Boolean  @default(true)
+  isDefault              Boolean  @default(false)
+  /// Reference to an environment variable or secrets vault key — NEVER a plaintext secret.
+  configurationReference String?  @map("configuration_reference")
+  status                 String   @default("registered")
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, provider])
+  @@index([organizationId])
+  @@map("organization_telephony_providers")
+}
+
+// ─── Phase 10A — Subscription & Entitlement Architecture ──────────────────
+
+enum PlanType {
+  STARTER
+  PROFESSIONAL
+  ENTERPRISE
+  CUSTOM
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  TRIAL
+  SUSPENDED
+  CANCELLED
+  PAST_DUE
+}
+
+model Plan {
+  id          String   @id @default(cuid())
+  name        String
+  planType    PlanType @map("plan_type")
+  /// JSON array of feature entitlements
+  features    Json     @default("[]")
+  /// JSON object of limit overrides
+  limits      Json     @default("{}")
+  /// Monthly price in cents (0 for custom/trial)
+  priceCents  Int      @default(0) @map("price_cents")
+  /// Billing interval
+  interval    String   @default("month")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  subscriptions Subscription[]
+
+  @@map("plans")
+}
+
+model Subscription {
+  id              String             @id @default(cuid())
+  organizationId  String             @unique @map("organization_id")
+  planId          String             @map("plan_id")
+  status          SubscriptionStatus @default(TRIAL)
+  /// Effective limits override plan defaults (JSON object)
+  effectiveLimits Json?              @map("effective_limits")
+  trialEndsAt     DateTime?          @map("trial_ends_at")
+  currentPeriodStart DateTime?       @map("current_period_start")
+  currentPeriodEnd   DateTime?       @map("current_period_end")
+  cancelledAt     DateTime?          @map("cancelled_at")
+  createdAt       DateTime           @default(now()) @map("created_at")
+  updatedAt       DateTime           @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  plan         Plan         @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  @@map("subscriptions")
+}
+
+model OrganizationBranding {
+  id              String   @id @default(cuid())
+  organizationId  String   @unique @map("organization_id")
+  displayName     String?  @map("display_name")
+  logoUrl         String?  @map("logo_url")
+  primaryColor    String   @default("#000000") @map("primary_color")
+  accentColor     String   @default("#3b82f6") @map("accent_color")
+  theme           String   @default("light")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("organization_branding")
+}
+
+enum AuditAction {
+  // Phase 10A — Subscription & Organization
+  ORGANIZATION_CREATED
+  ORGANIZATION_UPDATED
+  SUBSCRIPTION_CREATED
+  SUBSCRIPTION_CHANGED
+  FEATURE_ENABLED
+  FEATURE_DISABLED
+  LIMIT_CHANGED
+  PROVIDER_POLICY_CHANGED
+  USER_INVITED
+  USER_REMOVED
+  ROLE_CHANGED
+  BRANDING_UPDATED
+
+  // Phase 10C — Agent Lifecycle
+  AGENT_CREATED
+  AGENT_UPDATED
+  AGENT_DELETED
+  AGENT_STATUS_CHANGED
+
+  // Phase 10C — Campaign Lifecycle
+  CAMPAIGN_CREATED
+  CAMPAIGN_UPDATED
+  CAMPAIGN_STATUS_CHANGED
+
+  // Phase 10C — DNC Management
+  DNC_RECORD_ADDED
+  DNC_RECORD_REMOVED
+  DNC_ENFORCEMENT_BLOCKED
+  DNC_ENFORCEMENT_CHECKED
+
+  // Phase 10C — Compliance
+  COMPLIANCE_POLICY_CREATED
+  COMPLIANCE_POLICY_UPDATED
+  COMPLIANCE_POLICY_DELETED
+  COMPLIANCE_POLICY_ENABLED
+  COMPLIANCE_POLICY_DISABLED
+  COMPLIANCE_EVALUATION_RUN
+  COMPLIANCE_VIOLATION_DETECTED
+
+  // Phase 10C — Integration
+  INTEGRATION_CONFIGURED
+  INTEGRATION_UPDATED
+  INTEGRATION_REMOVED
+
+  // Phase 10C — Export
+  REPORT_EXPORTED
+
+  // Phase 10D — QA Evaluation
+  QA_TEMPLATE_CREATED
+  QA_TEMPLATE_UPDATED
+  QA_TEMPLATE_ARCHIVED
+  QA_TEMPLATE_DELETED
+  QA_EVALUATION_CREATED
+  QA_EVALUATION_SUBMITTED
+  QA_EVALUATION_VOIDED
+  QA_FINDING_CREATED
+  QA_FINDING_RESOLVED
+
+  // Phase 10E — Data Connectors
+  CONNECTOR_CREATED
+  CONNECTOR_UPDATED
+  CONNECTOR_DELETED
+  CONNECTOR_ENABLED
+  CONNECTOR_DISABLED
+  CONNECTOR_TESTED
+  CONNECTOR_MAPPING_CREATED
+  CONNECTOR_MAPPING_UPDATED
+  CONNECTOR_MAPPING_DELETED
+  CONNECTOR_SYNC_STARTED
+  CONNECTOR_SYNC_COMPLETED
+  CONNECTOR_SYNC_FAILED
+  // Phase 11 — Contact Center Operations
+  CALL_ENDED_BY_SUPERVISOR
+  ALERT_ACKNOWLEDGED
+  ALERT_RESOLVED
+  CONTACT_QUEUED
+  CONTACT_SKIPPED
+  // Phase 12 — Campaign Execution Engine
+  CAMPAIGN_EXECUTION_STARTED
+  CAMPAIGN_EXECUTION_PAUSED
+  CAMPAIGN_EXECUTION_RESUMED
+  CAMPAIGN_EXECUTION_STOPPED
+  CONTACTS_IMPORTED_PHASE12
+  CONTACTS_VALIDATED
+  CONTACTS_DEDUPLICATED
+  DNC_SCREENING_COMPLETED
+  DIALING_QUEUE_PREPARED
+  DIAL_ATTEMPT_CREATED
+  CALL_OUTCOME_RECORDED
+  RETRY_SCHEDULED
+  CALLBACK_SCHEDULED
+}
+
+model AuditEvent {
+  id              String      @id @default(cuid())
+  organizationId  String?     @map("organization_id")
+  actorId         String?     @map("actor_id")
+  actorEmail      String?     @map("actor_email")
+  action          AuditAction
+  /// Scrubbed metadata — no secrets, no credentials
+  metadata        Json        @default("{}")
+  ipAddress       String?     @map("ip_address")
+  createdAt       DateTime    @default(now()) @map("created_at")
+
+  @@index([organizationId, createdAt])
+  @@index([action])
+  @@map("audit_events")
+}
+
+// ─── Phase 10B — Campaign Operations ────────────────────────────────────
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  RUNNING
+  PAUSED
+  COMPLETED
+  CANCELLED
+  FAILED
+}
+
+model Campaign {
+  id              String          @id @default(cuid())
+  organizationId  String          @map("organization_id")
+  name            String
+  description     String          @default("")
+  agentId         String?         @map("agent_id")
+  status          CampaignStatus  @default(DRAFT)
+  direction       CallDirection   @default(OUTBOUND)
+  scheduledAt     DateTime?       @map("scheduled_at")
+  startedAt       DateTime?       @map("started_at")
+  completedAt     DateTime?       @map("completed_at")
+  totalContacts   Int             @default(0) @map("total_contacts")
+  processedContacts Int           @default(0) @map("processed_contacts")
+  completedCalls  Int             @default(0) @map("completed_calls")
+  failedCalls     Int             @default(0) @map("failed_calls")
+  configuration   Json            @default("{}")
+  createdAt       DateTime        @default(now()) @map("created_at")
+  updatedAt       DateTime        @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  agent        Agent?        @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  campaignContactsPhase12 CampaignContactPhase12[]
+  campaignEventsPhase12   CampaignEvent[]
+
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@map("campaigns")
+}
+
+// ─── Phase 10C — Compliance Policy Architecture ─────────────────────────
+
+enum CompliancePolicyCategory {
+  CALLING_HOURS
+  CONTACT_FREQUENCY
+  DISCLOSURE_REQUIREMENTS
+  RESTRICTED_CONTACTS
+  CONSENT_REQUIREMENTS
+  DATA_RETENTION
+}
+
+enum CompliancePolicySeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+model CompliancePolicy {
+  id              String                      @id @default(cuid())
+  organizationId  String                      @map("organization_id")
+  name            String
+  category        CompliancePolicyCategory
+  enabled         Boolean                     @default(true)
+  severity        CompliancePolicySeverity    @default(MEDIUM)
+  /// Structured JSON configuration — no executable logic
+  configuration   Json                        @default("{}")
+  description     String                      @default("")
+  createdAt       DateTime                    @default(now()) @map("created_at")
+  updatedAt       DateTime                    @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  evaluations  ComplianceEvaluation[]
+
+  @@index([organizationId])
+  @@index([organizationId, category])
+  @@index([organizationId, enabled])
+  @@map("compliance_policies")
+}
+
+enum ComplianceEvaluationStatus {
+  PASSED
+  VIOLATION
+  INCONCLUSIVE
+  SKIPPED
+}
+
+model ComplianceEvaluation {
+  id              String                        @id @default(cuid())
+  organizationId  String                        @map("organization_id")
+  policyId        String                        @map("policy_id")
+  /// The resource being evaluated (call, campaign, contact, etc.)
+  resourceType    String                        @map("resource_type")
+  resourceId      String                        @map("resource_id")
+  status          ComplianceEvaluationStatus    @default(INCONCLUSIVE)
+  /// Human-readable result explanation
+  result          String                        @default("")
+  /// Structured context for the evaluation
+  context         Json                          @default("{}")
+  evaluatedAt     DateTime                      @default(now()) @map("evaluated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  policy       CompliancePolicy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@index([resourceType, resourceId])
+  @@map("compliance_evaluations")
+}
+
+// ─── Phase 10C — DNC (Do Not Contact) Management ─────────────────────────
+
+enum DNCIdentifierType {
+  PHONE_NUMBER
+  EMAIL
+  CUSTOMER_ID
+}
+
+enum DNCStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+}
+
+enum DNCSource {
+  MANUAL
+  SYSTEM
+  PORTAL
+  LEGAL_REQUEST
+}
+
+model DNCRecord {
+  id              String            @id @default(cuid())
+  organizationId  String            @map("organization_id")
+  /// The contact identifier — stored but masked in list views
+  identifier      String
+  identifierType  DNCIdentifierType @map("identifier_type")
+  status          DNCStatus         @default(ACTIVE)
+  reason          String            @default("")
+  source          DNCSource         @default(MANUAL)
+  /// Optional expiry for time-limited DNC entries
+  expiresAt       DateTime?         @map("expires_at")
+  /// Who added this record (user id or system)
+  createdBy       String?           @map("created_by")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, identifier, identifierType])
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@index([organizationId, identifierType])
+  @@map("dnc_records")
+}
+
+// ─── Phase 10D — QA Evaluation Engine ──────────────────────────────────
+
+enum QATemplateStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum QAEvaluationType {
+  HUMAN
+  RULE_BASED
+  AI
+}
+
+enum QAEvaluationStatus {
+  DRAFT
+  IN_PROGRESS
+  COMPLETED
+  VOID
+}
+
+enum QAScoringMethod {
+  BOOLEAN
+  PASS_FAIL
+  NUMERIC
+  PERCENTAGE
+}
+
+enum QAFindingSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum QAFindingStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+model QAEvaluationTemplate {
+  id              String            @id @default(cuid())
+  organizationId  String            @map("organization_id")
+  name            String
+  description     String            @default("")
+  status          QATemplateStatus  @default(DRAFT)
+  evaluationType  QAEvaluationType  @default(HUMAN)
+  maxScore        Int               @default(100)
+  passingScore    Int               @default(70)
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  criteria     QAEvaluationCriterion[]
+  evaluations  QAEvaluation[]
+
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@map("qa_evaluation_templates")
+}
+
+model QAEvaluationCriterion {
+  id              String            @id @default(cuid())
+  organizationId  String            @map("organization_id")
+  templateId      String            @map("template_id")
+  name            String
+  description     String            @default("")
+  weight          Int               @default(10)
+  required        Boolean           @default(true)
+  scoringMethod   QAScoringMethod   @default(NUMERIC)
+  maxScore        Int               @default(10)
+  displayOrder    Int               @default(0)
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+
+  template  QAEvaluationTemplate  @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  scores    QAEvaluationScore[]
+  findings  QAFinding[]
+
+  @@index([templateId])
+  @@index([organizationId])
+  @@map("qa_evaluation_criteria")
+}
+
+model QAEvaluation {
+  id              String              @id @default(cuid())
+  organizationId  String              @map("organization_id")
+  templateId      String              @map("template_id")
+  voiceSessionId  String              @map("voice_session_id")
+  evaluatorId     String?             @map("evaluator_id")
+  evaluatorName   String              @default("")
+  status          QAEvaluationStatus  @default(DRAFT)
+  totalScore      Float?              @map("total_score")
+  passed          Boolean?
+  notes           String              @default("")
+  submittedAt     DateTime?           @map("submitted_at")
+  createdAt       DateTime            @default(now()) @map("created_at")
+  updatedAt       DateTime            @updatedAt @map("updated_at")
+
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  template     QAEvaluationTemplate @relation(fields: [templateId], references: [id], onDelete: Restrict)
+  voiceSession VoiceSession         @relation(fields: [voiceSessionId], references: [id], onDelete: Restrict)
+  scores       QAEvaluationScore[]
+  findings     QAFinding[]
+
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@index([voiceSessionId])
+  @@index([templateId])
+  @@map("qa_evaluations")
+}
+
+model QAEvaluationScore {
+  id              String    @id @default(cuid())
+  organizationId  String    @map("organization_id")
+  evaluationId    String    @map("evaluation_id")
+  criterionId     String    @map("criterion_id")
+  score           Float
+  comments        String    @default("")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  evaluation  QAEvaluation        @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+  criterion   QAEvaluationCriterion @relation(fields: [criterionId], references: [id], onDelete: Restrict)
+
+  @@unique([evaluationId, criterionId])
+  @@index([organizationId])
+  @@index([evaluationId])
+  @@map("qa_evaluation_scores")
+}
+
+model QAFinding {
+  id              String            @id @default(cuid())
+  organizationId  String            @map("organization_id")
+  evaluationId    String            @map("evaluation_id")
+  criterionId     String?           @map("criterion_id")
+  category        String            @default("")
+  severity        QAFindingSeverity @default(MEDIUM)
+  status          QAFindingStatus   @default(OPEN)
+  description     String
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+
+  evaluation  QAEvaluation           @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+  criterion   QAEvaluationCriterion? @relation(fields: [criterionId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@index([evaluationId])
+  @@map("qa_findings")
+}
+
+// ─── Phase 10E — Data Connectors & Enterprise Integration Hub ───────────
+
+enum ConnectorType {
+  CRM
+  CORE_SYSTEM
+  LOAN_MANAGEMENT
+  COLLECTIONS
+  ERP
+  DATABASE
+  CUSTOM_API
+  PAYMENTS
+}
+
+enum ConnectorStatus {
+  DRAFT
+  CONFIGURING
+  CONNECTED
+  DISCONNECTED
+  ERROR
+  DISABLED
+}
+
+enum ConnectorHealthStatus {
+  HEALTHY
+  DEGRADED
+  UNAVAILABLE
+  UNKNOWN
+}
+
+enum SyncMode {
+  MANUAL
+  SCHEDULED
+  WEBHOOK
+  EVENT_DRIVEN
+}
+
+enum SyncJobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum SyncDirection {
+  INBOUND
+  OUTBOUND
+  BIDIRECTIONAL
+}
+
+enum DataTransformerType {
+  TRIM
+  LOWERCASE
+  UPPERCASE
+  PHONE_NORMALIZATION
+  DATE_NORMALIZATION
+  NUMBER_NORMALIZATION
+}
+
+enum ConnectorActivityType {
+  CONNECTION_TESTED
+  CONNECTOR_ENABLED
+  CONNECTOR_DISABLED
+  SYNC_STARTED
+  SYNC_COMPLETED
+  SYNC_FAILED
+  MAPPING_CHANGED
+}
+
+model DataConnector {
+  id                      String                @id @default(cuid())
+  organizationId          String                @map("organization_id")
+  name                    String
+  provider                String
+  type                    ConnectorType
+  status                  ConnectorStatus       @default(DRAFT)
+  healthStatus            ConnectorHealthStatus @default(UNKNOWN)
+  syncMode                SyncMode              @default(MANUAL)
+  scheduleCron            String?               @map("schedule_cron")
+  /// Reference to secure credential storage — NEVER a plaintext secret
+  credentialReference     String?               @map("credential_reference")
+  configuration           Json                  @default("{}")
+  lastSyncAt              DateTime?             @map("last_sync_at")
+  lastTestedAt            DateTime?             @map("last_tested_at")
+  lastHealthCheckAt       DateTime?             @map("last_health_check_at")
+  enabled                 Boolean               @default(false)
+  createdAt               DateTime              @default(now()) @map("created_at")
+  updatedAt               DateTime              @updatedAt @map("updated_at")
+
+  organization Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  mappings   DataConnectorFieldMapping[]
+  syncJobs   DataConnectorSyncJob[]
+  activities DataConnectorActivity[]
+
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@index([organizationId, type])
+  @@map("data_connectors")
+}
+
+model DataConnectorFieldMapping {
+  id                String                @id @default(cuid())
+  organizationId    String                @map("organization_id")
+  connectorId       String                @map("connector_id")
+  sourceField       String                @map("source_field")
+  targetField       String                @map("target_field")
+  dataType          String                @default("string") @map("data_type")
+  required          Boolean               @default(false)
+  transformerType   DataTransformerType?  @map("transformer_type")
+  transformerConfig Json                  @default("{}") @map("transformer_config")
+  displayOrder      Int                   @default(0) @map("display_order")
+  createdAt         DateTime              @default(now()) @map("created_at")
+  updatedAt         DateTime              @updatedAt @map("updated_at")
+
+  connector DataConnector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+
+  @@unique([connectorId, sourceField])
+  @@index([organizationId])
+  @@index([connectorId])
+  @@map("data_connector_field_mappings")
+}
+
+model DataConnectorSyncJob {
+  id                String          @id @default(cuid())
+  organizationId    String          @map("organization_id")
+  connectorId       String          @map("connector_id")
+  direction         SyncDirection
+  status            SyncJobStatus   @default(PENDING)
+  startedAt         DateTime?       @map("started_at")
+  completedAt       DateTime?       @map("completed_at")
+  recordsProcessed  Int             @default(0) @map("records_processed")
+  recordsFailed     Int             @default(0) @map("records_failed")
+  errorMessage      String?         @map("error_message")
+  metadata          Json            @default("{}")
+  createdAt         DateTime        @default(now()) @map("created_at")
+  updatedAt         DateTime        @updatedAt @map("updated_at")
+
+  connector DataConnector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@index([connectorId])
+  @@map("data_connector_sync_jobs")
+}
+
+model DataConnectorActivity {
+  id                String                  @id @default(cuid())
+  organizationId    String                  @map("organization_id")
+  connectorId       String                  @map("connector_id")
+  activityType      ConnectorActivityType   @map("activity_type")
+  description       String                  @default("")
+  status            String                  @default("success")
+  metadata          Json                    @default("{}")
+  actorId           String?                 @map("actor_id")
+  createdAt         DateTime                @default(now()) @map("created_at")
+
+  connector DataConnector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([organizationId, createdAt])
+  @@index([connectorId])
+  @@map("data_connector_activities")
+}
+
+// ─── Phase 12 — Campaign Execution & Intelligent Dialing Engine ───────────
+
+enum ContactValidationStatus {
+  VALID
+  INVALID
+  DUPLICATE
+  MISSING_PHONE
+  BLOCKED
+  DNC
+  UNREACHABLE
+  PENDING
+}
+
+enum PhoneValidationStatus {
+  VALID
+  INVALID_FORMAT
+  INVALID_COUNTRY
+  UNKNOWN
+}
+
+enum DialingQueueItemStatus {
+  QUEUED
+  RESERVED
+  DIALING
+  CONNECTED
+  COMPLETED
+  RETRY
+  FAILED
+  SKIPPED
+  BLOCKED
+  CANCELLED
+}
+
+enum CallOutcomeType {
+  ANSWERED
+  NO_ANSWER
+  BUSY
+  FAILED
+  VOICEMAIL
+  WRONG_NUMBER
+  CALLBACK_REQUESTED
+  PROMISE_TO_PAY
+  REFUSED
+  DISPUTE
+  PAYMENT_CONFIRMED
+  DNC_REQUEST
+  LANGUAGE_CHANGE
+  TRANSFERRED
+  COMPLETED
+}
+
+enum RetryBackoffStrategy {
+  FIXED
+  LINEAR
+  EXPONENTIAL
+  CUSTOM
+}
+
+enum CampaignEventType {
+  CAMPAIGN_CREATED
+  CAMPAIGN_STARTED
+  CAMPAIGN_PAUSED
+  CAMPAIGN_RESUMED
+  CAMPAIGN_STOPPED
+  CAMPAIGN_COMPLETED
+  CONTACTS_IMPORTED
+  CONTACTS_VALIDATED
+  CONTACTS_DEDUPLICATED
+  DNC_CHECK_COMPLETED
+  QUEUE_PREPARED
+  RETRY_SCHEDULED
+  CALLBACK_SCHEDULED
+}
+
+model Contact {
+  id                String                      @id @default(cuid())
+  organizationId    String                      @map("organization_id")
+  firstName         String?                     @map("first_name")
+  lastName          String?                     @map("last_name")
+  rawPhone          String                      @map("raw_phone")
+  normalizedPhone   String?                     @map("normalized_phone")
+  email             String?
+  customerId        String?                     @map("customer_id")
+  externalId        String?                     @map("external_id")
+  language          String?
+  timezone          String?
+  country           String?                     @default("JO")
+  segment           String?
+  priority          Int                         @default(0)
+  customFields      Json                        @default("{}") @map("custom_fields")
+  validationStatus  ContactValidationStatus     @default(PENDING) @map("validation_status")
+  phoneValidation   PhoneValidationStatus       @default(UNKNOWN) @map("phone_validation")
+  countryCode       String?                     @map("country_code")
+  phoneType         String?                     @map("phone_type")
+  isDnc             Boolean                     @default(false) @map("is_dnc")
+  dncReason         String?                     @map("dnc_reason")
+  isDuplicate       Boolean                     @default(false) @map("is_duplicate")
+  duplicateOfId     String?                     @map("duplicate_of_id")
+  importedAt        DateTime                    @default(now()) @map("imported_at")
+  createdAt         DateTime                    @default(now()) @map("created_at")
+  updatedAt         DateTime                    @updatedAt @map("updated_at")
+
+  organization      Organization                @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaignContacts  CampaignContactPhase12[]
+
+  @@index([organizationId])
+  @@index([organizationId, validationStatus])
+  @@index([organizationId, normalizedPhone])
+  @@index([organizationId, customerId])
+  @@index([organizationId, externalId])
+  @@unique([organizationId, normalizedPhone])
+  @@map("contacts_phase12")
+}
+
+model CampaignContactPhase12 {
+  id                String                      @id @default(cuid())
+  organizationId    String                      @map("organization_id")
+  campaignId        String                      @map("campaign_id")
+  contactId         String                      @map("contact_id")
+  status            DialingQueueItemStatus      @default(QUEUED)
+  priority          Int                         @default(0)
+  attemptNumber     Int                         @default(0) @map("attempt_number")
+  maxAttempts       Int                         @default(3) @map("max_attempts")
+  scheduledAt       DateTime?                   @map("scheduled_at")
+  lockedAt          DateTime?                   @map("locked_at")
+  lockedBy          String?                     @map("locked_by")
+  expiresAt         DateTime?
+  lastAttemptAt     DateTime?                   @map("last_attempt_at")
+  nextAttemptAt     DateTime?                   @map("next_attempt_at")
+  callId            String?                     @map("call_id")
+  voiceSessionId    String?                     @map("voice_session_id")
+  lastOutcome       CallOutcomeType?            @map("last_outcome")
+  lastOutcomeDetail String?                     @map("last_outcome_detail")
+  blocked           Boolean                     @default(false)
+  blockedReason     String?                     @map("blocked_reason")
+  isCallback        Boolean                     @default(false) @map("is_callback")
+  callbackAt        DateTime?                   @map("callback_at")
+  customData        Json                        @default("{}") @map("custom_data")
+  createdAt         DateTime                    @default(now()) @map("created_at")
+  updatedAt         DateTime                    @updatedAt @map("updated_at")
+
+  organization      Organization                @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaign          Campaign                    @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact           Contact                     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, contactId])
+  @@index([organizationId])
+  @@index([organizationId, campaignId])
+  @@index([organizationId, campaignId, status])
+  @@index([organizationId, campaignId, priority])
+  @@index([organizationId, campaignId, nextAttemptAt])
+  @@index([organizationId, contactId])
+  @@map("campaign_contacts_phase12")
+}
+
+model DialAttempt {
+  id                String                      @id @default(cuid())
+  organizationId    String                      @map("organization_id")
+  campaignContactId String                      @map("campaign_contact_id")
+  attemptNumber     Int                         @map("attempt_number")
+  callId            String?                     @map("call_id")
+  voiceSessionId    String?                     @map("voice_session_id")
+  outcome           CallOutcomeType?
+  outcomeDetail     String?                     @map("outcome_detail")
+  durationSeconds   Int?                        @map("duration_seconds")
+  provider          String?
+  providerCallId    String?                     @map("provider_call_id")
+  startedAt         DateTime                    @map("started_at")
+  connectedAt       DateTime?                   @map("connected_at")
+  endedAt           DateTime?                   @map("ended_at")
+  errorMessage      String?                     @map("error_message")
+  metadata          Json                        @default("{}")
+  createdAt         DateTime                    @default(now()) @map("created_at")
+
+  organization      Organization                @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([organizationId, campaignContactId])
+  @@index([organizationId, callId])
+  @@map("dial_attempts_phase12")
+}
+
+model CampaignEvent {
+  id                String                      @id @default(cuid())
+  organizationId    String                      @map("organization_id")
+  campaignId        String                      @map("campaign_id")
+  eventType         CampaignEventType           @map("event_type")
+  description       String                      @default("")
+  metadata          Json                        @default("{}")
+  actorId           String?                     @map("actor_id")
+  createdAt         DateTime                    @default(now()) @map("created_at")
+
+  organization      Organization                @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaign          Campaign                    @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([organizationId, campaignId])
+  @@index([organizationId, createdAt])
+  @@map("campaign_events_phase12")
+}
+
+model RetryPolicy {
+  id                String                      @id @default(cuid())
+  organizationId    String                      @map("organization_id")
+  name              String
+  description       String                      @default("")
+  maxAttempts       Int                         @default(3) @map("max_attempts")
+  backoffStrategy   RetryBackoffStrategy        @default(EXPONENTIAL) @map("backoff_strategy")
+  /// JSON mapping of outcome → delay in seconds
+  outcomeDelays     Json                        @default("{}") @map("outcome_delays")
+  /// JSON mapping of outcome → action (retry, stop, callback, escalate)
+  outcomeActions    Json                        @default("{}") @map("outcome_actions")
+  isActive          Boolean                     @default(true) @map("is_active")
+  createdAt         DateTime                    @default(now()) @map("created_at")
+  updatedAt         DateTime                    @updatedAt @map("updated_at")
+
+  organization      Organization                @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([organizationId, isActive])
+  @@map("retry_policies_phase12")
+}
+
+model CampaignSchedule {
+  id                String                      @id @default(cuid())
+  organizationId    String                      @map("organization_id")
+  campaignId        String?                     @map("campaign_id")
+  timezone          String                      @default("Asia/Amman")
+  allowedWeekdays   Json                        @default("[1,2,3,4,5]") @map("allowed_weekdays")
+  allowedStartHour  Int                         @default(9) @map("allowed_start_hour")
+  allowedEndHour    Int                         @default(17) @map("allowed_end_hour")
+  holidays          Json                        @default("[]")
+  isActive          Boolean                     @default(true) @map("is_active")
+  createdAt         DateTime                    @default(now()) @map("created_at")
+  updatedAt         DateTime                    @updatedAt @map("updated_at")
+
+  organization      Organization                @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([organizationId, campaignId])
+  @@map("campaign_schedules_phase12")
 }
