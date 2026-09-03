@@ -31,7 +31,7 @@ import { createMemoryDb, createStore, newId, SCHEMA_SQL, type Db } from "../db/s
 import { ApiError, configInvalid, createLogger, notFound, rateLimited, toApiError, type Logger } from "../lib/observability";
 import { resolveEngine, type VoiceEngine } from "../providers";
 import { createIntegrations, type IntegrationRegistry } from "../integrations";
-import { createAgentService, createUsageService, createVoiceService, createEntitlementEngine, seedDefaultPlans, createSaasControlPlaneService, createWorkspaceBootstrapService, createComplianceService, createDNCService, createReportService, createAuditService, type EntitlementEngine, type SaasControlPlaneService, type WorkspaceBootstrapService, type ComplianceService, type DNCService, type ReportService, type AuditService } from "../services";
+import { createAgentService, createUsageService, createVoiceService, createEntitlementEngine, seedDefaultPlans, createSaasControlPlaneService, createTenantBrandingService, createWorkspaceBootstrapService, createComplianceService, createDNCService, createReportService, createAuditService, type EntitlementEngine, type SaasControlPlaneService, type TenantBrandingService, type WorkspaceBootstrapService, type ComplianceService, type DNCService, type ReportService, type AuditService } from "../services";
 import { createAuthService } from "../services/auth";
 import { createVoiceOrchestrator } from "../services/voiceSessions";
 import { createConnectorService } from "../services/connectors";
@@ -103,7 +103,7 @@ const normalizeAgentId = (raw?: string) =>
   !raw || raw === "centerai-demo-agent" || raw === DEMO_AGENT_ID ? DEMO_AGENT_ID : raw;
 
 /** Endpoints that must keep answering even when production config is incomplete. */
-const ALWAYS_PUBLIC = ["/api/health", "/api/voice/capabilities", "/api/config"];
+const ALWAYS_PUBLIC = ["/api/health", "/api/voice/capabilities", "/api/public/branding", "/api/config"];
 
 export interface AppServices {
   agents: ReturnType<typeof createAgentService>;
@@ -130,6 +130,7 @@ export interface App {
   startup: StartupConfig;
   entitlements: EntitlementEngine;
   saas: SaasControlPlaneService;
+  tenantBranding: TenantBrandingService;
   workspaceBootstrap: WorkspaceBootstrapService;
   /** Phase 10C — Governance services */
   compliance: ComplianceService;
@@ -201,6 +202,7 @@ export function createApp(options: CreateAppOptions = {}): App {
   const entitlements = createEntitlementEngine(db);
   const audit = createAuditService(db);
   const saas = createSaasControlPlaneService({ db, entitlements, audit });
+  const tenantBranding = createTenantBrandingService({ db, entitlements, audit });
   const workspaceBootstrap = createWorkspaceBootstrapService(db, entitlements);
 
   const agents = createAgentService(db);
@@ -336,6 +338,7 @@ export function createApp(options: CreateAppOptions = {}): App {
     orgProviderPolicy,
     entitlements,
     saas,
+    tenantBranding,
     workspaceBootstrap,
     compliance,
     dnc,
@@ -385,6 +388,17 @@ export function createApp(options: CreateAppOptions = {}): App {
         time: new Date().toISOString(),
         mode: env.mode,
         appMode: env.appMode,
+      });
+    }
+
+    if (path === "/api/public/branding" && method === "GET") {
+      // Custom-domain and pre-auth tenant discovery infrastructure does not exist in this build.
+      // Never infer a tenant from an unverified Host header or expose authenticated branding here.
+      return ok({
+        resolution: "not_configured",
+        branding: null,
+        customDomain: { status: "not_configured", hostname: null },
+        loginBranding: { status: "not_configured" },
       });
     }
 
@@ -1127,7 +1141,32 @@ export function createApp(options: CreateAppOptions = {}): App {
       if (!org) throw notFound("Organization");
       const user = ctx.userId ? await db.users.get(ctx.userId) : null;
       if (!user) throw notFound("User");
+      if (user.organizationId !== org.id) {
+        throw new ApiError("FORBIDDEN", "Authenticated organization mismatch.");
+      }
       return ok(await app.workspaceBootstrap.getBootstrap(user, org));
+    }
+
+    /* ── Authenticated tenant branding ── */
+    if (path === "/api/workspace/branding" && method === "GET") {
+      requireSession(ctx);
+      const user = ctx.userId ? await db.users.get(ctx.userId) : undefined;
+      if (!user || user.organizationId !== ctx.organizationId) {
+        throw new ApiError("FORBIDDEN", "Authenticated organization mismatch.");
+      }
+      return ok(app.tenantBranding.getForOrganization(ctx.organizationId));
+    }
+
+    if (path === "/api/workspace/branding" && (method === "PATCH" || method === "PUT")) {
+      authorize(ctx, ["owner", "admin"]);
+      const actor = ctx.userId ? await db.users.get(ctx.userId) : undefined;
+      if (!actor || actor.organizationId !== ctx.organizationId) {
+        throw new ApiError("FORBIDDEN", "Authenticated organization mismatch.");
+      }
+      return ok(app.tenantBranding.updateForOrganization(ctx.organizationId, request.body, {
+        id: ctx.userId,
+        email: actor.email,
+      }));
     }
 
     /* ── Phase 10A — Entitlements API ── */

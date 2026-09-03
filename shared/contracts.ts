@@ -521,6 +521,7 @@ export interface OrganizationBrandingRow {
   organizationId: string;
   displayName: string | null;
   logoUrl: string | null;
+  faviconUrl: string | null;
   primaryColor: string;
   accentColor: string;
   theme: "light" | "dark" | "auto";
@@ -1114,9 +1115,31 @@ export interface WorkspaceBootstrapDto {
 export interface OrganizationBrandingDto {
   displayName: string;
   logoUrl: string | null;
+  faviconUrl: string | null;
   primaryColor: string;
   accentColor: string;
   theme: "light" | "dark" | "auto";
+  /** Whether values came from a tenant row or safe organization defaults. */
+  source: "tenant" | "fallback";
+  assetStorage: {
+    mode: "external_url";
+    uploads: "not_configured";
+  };
+  customDomain: {
+    status: "not_configured";
+    hostname: null;
+  };
+  /** Pre-auth tenant discovery does not exist without verified custom-domain infrastructure. */
+  loginBranding: {
+    status: "not_configured";
+  };
+}
+
+export interface PublicBrandingStatusDto {
+  resolution: "not_configured";
+  branding: null;
+  customDomain: OrganizationBrandingDto["customDomain"];
+  loginBranding: OrganizationBrandingDto["loginBranding"];
 }
 
 export const DEMO_ORGANIZATION_ID = "org_demo";

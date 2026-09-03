@@ -7,6 +7,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { getVoiceMode } from "@/api";
 import { VoiceBars } from "@/components/ui/VoiceBars";
 import { cn } from "@/utils/cn";
+import { useTenantBranding } from "@/branding/TenantBrandingProvider";
 
 export function Sidebar({
   mobileOpen,
@@ -17,6 +18,7 @@ export function Sidebar({
 }) {
   const { origin, agents, originNote } = useStudio();
   const { session } = useAuth();
+  const { branding } = useTenantBranding();
   const [mode, setMode] = useState(getVoiceMode());
 
   useEffect(() => {
@@ -31,16 +33,25 @@ export function Sidebar({
           to="/studio/overview"
           onClick={onCloseMobile}
           className="group flex items-center gap-2.5"
-          aria-label="CenterAI Agent Studio — overview"
+          aria-label={`${branding.displayName} Agent Studio — overview`}
         >
-          <span className="grid h-7 w-7 place-items-center overflow-hidden rounded-full bg-ink px-1.5 text-white/90">
-            <VoiceBars count={5} intensity={0.95} className="h-3 w-full" barClassName="min-w-[1.5px]" />
-          </span>
-          <span className="font-display text-[19px] leading-none font-bold tracking-tight">
-            Center<span className="text-black/40">AI</span>
-          </span>
-          <span className="ms-1 rounded-full border border-hair px-2 py-0.5 font-display text-[9px] font-bold tracking-[0.16em] text-black/45 uppercase">
-            Studio
+          {branding.logoUrl ? (
+            <img
+              src={branding.logoUrl}
+              alt=""
+              referrerPolicy="no-referrer"
+              className="h-8 w-8 rounded-lg object-contain"
+            />
+          ) : (
+            <span
+              className="grid h-7 w-7 place-items-center overflow-hidden rounded-full px-1.5 text-white/90"
+              style={{ backgroundColor: branding.primaryColor }}
+            >
+              <VoiceBars count={5} intensity={0.95} className="h-3 w-full" barClassName="min-w-[1.5px]" />
+            </span>
+          )}
+          <span className="min-w-0 truncate font-display text-[18px] leading-none font-bold tracking-tight">
+            {branding.displayName}
           </span>
         </Link>
       </div>
@@ -48,7 +59,7 @@ export function Sidebar({
       <div className="rounded-2xl border border-hair bg-mist/70 p-3.5">
         <div className="flex items-center gap-2 text-[11px] text-black/45">
           <Building2 size={13} />
-          <span className="truncate font-medium">{session?.organization.name ?? "Demo Workspace"}</span>
+          <span className="truncate font-medium">{branding.displayName}</span>
         </div>
         <p className="mt-2 font-display text-2xl leading-none font-bold tracking-tight">
           {agents.length}
@@ -92,10 +103,11 @@ export function Sidebar({
                 cn(
                   "flex items-center gap-3 rounded-2xl px-3 py-2.5 text-start transition-all duration-300 ease-smooth",
                   isActive
-                    ? "bg-ink text-white shadow-[0_14px_30px_-22px_rgba(0,0,0,0.9)]"
+                    ? "text-white shadow-[0_14px_30px_-22px_rgba(0,0,0,0.9)]"
                     : "text-black/60 hover:bg-mist hover:text-black"
                 )
               }
+              style={({ isActive }) => isActive ? { backgroundColor: branding.primaryColor } : undefined}
             >
               {({ isActive }) => (
                 <>

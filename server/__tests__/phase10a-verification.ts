@@ -253,12 +253,19 @@ async function runTests() {
   // ─── TEST 9: Branding Configuration ──────────────────────────────────
   section("9. Branding Configuration");
 
-  // Create branding for org
+  // Explicitly grant this Starter tenant the capability before applying custom branding.
+  await db.entitlements.upsert({
+    organizationId: orgId,
+    feature: "custom_branding",
+    enabled: true,
+    reason: "Phase 10A branding verification",
+  });
   const branding = await db.branding.upsert({
     id: newId("brand"),
     organizationId: orgId,
     displayName: "Custom Display Name",
     logoUrl: null,
+    faviconUrl: null,
     primaryColor: "#ff6600",
     accentColor: "#00ff66",
     theme: "dark",

@@ -264,7 +264,7 @@ export interface Db {
   branding: {
     getByOrg(organizationId: string): Promise<OrganizationBrandingRow | undefined>;
     upsert(input: Omit<OrganizationBrandingRow, "createdAt" | "updatedAt">): Promise<OrganizationBrandingRow>;
-    update(organizationId: string, changes: Partial<Pick<OrganizationBrandingRow, "displayName" | "logoUrl" | "primaryColor" | "accentColor" | "theme">>): Promise<OrganizationBrandingRow | undefined>;
+    update(organizationId: string, changes: Partial<Pick<OrganizationBrandingRow, "displayName" | "logoUrl" | "faviconUrl" | "primaryColor" | "accentColor" | "theme">>): Promise<OrganizationBrandingRow | undefined>;
   };
   audit: {
     create(input: Omit<AuditEventRow, "id" | "createdAt">): Promise<AuditEventRow>;

@@ -416,6 +416,7 @@ model OrganizationBranding {
   organizationId  String   @unique @map("organization_id")
   displayName     String?  @map("display_name")
   logoUrl         String?  @map("logo_url")
+  faviconUrl      String?  @map("favicon_url")
   primaryColor    String   @default("#000000") @map("primary_color")
   accentColor     String   @default("#3b82f6") @map("accent_color")
   theme           String   @default("light")

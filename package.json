@@ -7,8 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "tsx server/__tests__/saas-control-plane-verification.ts",
-    "test:saas": "tsx server/__tests__/saas-control-plane-verification.ts"
+    "test": "npm run test:saas && npm run test:white-label",
+    "test:saas": "tsx server/__tests__/saas-control-plane-verification.ts",
+    "test:white-label": "tsx server/__tests__/white-label-verification.ts"
   },
   "dependencies": {
     "@prisma/client": "^7.10.0",

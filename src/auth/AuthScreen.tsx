@@ -32,10 +32,15 @@ export function AuthScreen({ mode }: { mode: Mode }) {
     if (mode === "register") void refresh(false);
   }, [mode, refresh]);
 
+  const requestedDestination = (location.state as { from?: string } | null)?.from;
+  const authenticatedDestination =
+    requestedDestination?.startsWith("/studio") || requestedDestination?.startsWith("/workspace")
+      ? requestedDestination
+      : "/studio/overview";
+
   useEffect(() => {
-    const from = (location.state as { from?: string } | null)?.from;
-    if (session) navigate(from && from.startsWith("/studio") ? from : "/studio/overview", { replace: true });
-  }, [session, navigate, location.state]);
+    if (session) navigate(authenticatedDestination, { replace: true });
+  }, [session, navigate, authenticatedDestination]);
 
   const set = (key: keyof typeof form) => (value: string) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -85,7 +90,7 @@ export function AuthScreen({ mode }: { mode: Mode }) {
             organizationName: form.organizationName.trim(),
           });
     setSubmitting(false);
-    if (ok) navigate("/studio/overview", { replace: true });
+    if (ok) navigate(authenticatedDestination, { replace: true });
   };
 
   const serverError = error;

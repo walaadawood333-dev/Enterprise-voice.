@@ -11,6 +11,7 @@ import { AnalyticsPage } from "./pages/Analytics";
 import { IntegrationsPage } from "./pages/Integrations";
 import { SettingsPage } from "./pages/Settings";
 import { DEFAULT_STUDIO_PATH } from "./studioRoutes";
+import { TenantBrandingProvider } from "@/branding/TenantBrandingProvider";
 
 /**
  * Agent Studio routing. Everything under /studio sits behind the session guard; the guard is UX —
@@ -19,21 +20,23 @@ import { DEFAULT_STUDIO_PATH } from "./studioRoutes";
 export function StudioApp() {
   return (
     <RequireAuth>
-      <Routes>
-        <Route element={<DashboardLayout />}>
-          <Route index element={<Navigate to={DEFAULT_STUDIO_PATH} replace />} />
-          <Route path="overview" element={<OverviewPage />} />
-          <Route path="agents" element={<AgentsPage />} />
-          <Route path="agents/:agentId" element={<AgentDetailPage />} />
-          <Route path="agents/:agentId/test" element={<AgentTestPage />} />
-          <Route path="sessions" element={<SessionsPage />} />
-          <Route path="campaigns" element={<CampaignsPage />} />
-          <Route path="analytics" element={<AnalyticsPage />} />
-          <Route path="integrations" element={<IntegrationsPage />} />
-          <Route path="settings" element={<SettingsPage />} />
-          <Route path="*" element={<Navigate to={DEFAULT_STUDIO_PATH} replace />} />
-        </Route>
-      </Routes>
+      <TenantBrandingProvider>
+        <Routes>
+          <Route element={<DashboardLayout />}>
+            <Route index element={<Navigate to={DEFAULT_STUDIO_PATH} replace />} />
+            <Route path="overview" element={<OverviewPage />} />
+            <Route path="agents" element={<AgentsPage />} />
+            <Route path="agents/:agentId" element={<AgentDetailPage />} />
+            <Route path="agents/:agentId/test" element={<AgentTestPage />} />
+            <Route path="sessions" element={<SessionsPage />} />
+            <Route path="campaigns" element={<CampaignsPage />} />
+            <Route path="analytics" element={<AnalyticsPage />} />
+            <Route path="integrations" element={<IntegrationsPage />} />
+            <Route path="settings" element={<SettingsPage />} />
+            <Route path="*" element={<Navigate to={DEFAULT_STUDIO_PATH} replace />} />
+          </Route>
+        </Routes>
+      </TenantBrandingProvider>
     </RequireAuth>
   );
 }

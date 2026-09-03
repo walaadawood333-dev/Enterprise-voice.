@@ -262,6 +262,7 @@ const toBranding = (row: Record<string, unknown> | null): OrganizationBrandingRo
         organizationId: str(row, "organizationId"),
         displayName: str(row, "displayName") || null,
         logoUrl: str(row, "logoUrl") || null,
+        faviconUrl: str(row, "faviconUrl") || null,
         primaryColor: str(row, "primaryColor"),
         accentColor: str(row, "accentColor"),
         theme: str(row, "theme") as OrganizationBrandingRow["theme"],

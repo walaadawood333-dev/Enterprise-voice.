@@ -552,6 +552,12 @@ export function createUsageService(db: Db) {
 // ─── Phase 10A — Entitlement & Workspace Bootstrap Services ──────────────
 export { createEntitlementEngine, seedDefaultPlans, DEFAULT_PLANS, ZERO_LIMITS, type EntitlementEngine, type SubscriptionWithPlan } from "./entitlements";
 export { createSaasControlPlaneService, type SaasControlPlaneService } from "./saasControlPlane";
+export {
+  createTenantBrandingService,
+  createExternalUrlBrandingAssetStore,
+  type TenantBrandingService,
+  type BrandingAssetStore,
+} from "./tenantBranding";
 export { createWorkspaceBootstrapService, type WorkspaceBootstrapService } from "./workspace";
 
 // ─── Phase 10C — Governance Services ─────────────────────────────────────

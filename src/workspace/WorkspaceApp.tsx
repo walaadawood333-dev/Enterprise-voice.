@@ -16,23 +16,29 @@ import { CampaignDetail } from "./pages/CampaignDetail";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
 import { AgentPerformance } from "./pages/AgentPerformance";
 import { WorkspacePlan } from "./pages/WorkspacePlan";
+import { RequireAuth } from "@/studio/RequireAuth";
+import { TenantBrandingProvider } from "@/branding/TenantBrandingProvider";
 
 export function WorkspaceApp() {
   return (
-    <Routes>
-      <Route element={<WorkspaceLayout />}>
-        <Route index element={<Navigate to="/workspace/overview" replace />} />
-        <Route path="overview" element={<WorkspaceOverview />} />
-        <Route path="calls" element={<CallsList />} />
-        <Route path="calls/:callId" element={<CallDetail />} />
-        <Route path="live" element={<LiveActivity />} />
-        <Route path="agents/performance" element={<AgentPerformance />} />
-        <Route path="campaigns" element={<CampaignsList />} />
-        <Route path="campaigns/:campaignId" element={<CampaignDetail />} />
-        <Route path="analytics" element={<AnalyticsPage />} />
-        <Route path="plan" element={<WorkspacePlan />} />
-        <Route path="*" element={<Navigate to="/workspace/overview" replace />} />
-      </Route>
-    </Routes>
+    <RequireAuth>
+      <TenantBrandingProvider>
+        <Routes>
+          <Route element={<WorkspaceLayout />}>
+            <Route index element={<Navigate to="/workspace/overview" replace />} />
+            <Route path="overview" element={<WorkspaceOverview />} />
+            <Route path="calls" element={<CallsList />} />
+            <Route path="calls/:callId" element={<CallDetail />} />
+            <Route path="live" element={<LiveActivity />} />
+            <Route path="agents/performance" element={<AgentPerformance />} />
+            <Route path="campaigns" element={<CampaignsList />} />
+            <Route path="campaigns/:campaignId" element={<CampaignDetail />} />
+            <Route path="analytics" element={<AnalyticsPage />} />
+            <Route path="plan" element={<WorkspacePlan />} />
+            <Route path="*" element={<Navigate to="/workspace/overview" replace />} />
+          </Route>
+        </Routes>
+      </TenantBrandingProvider>
+    </RequireAuth>
   );
 }

@@ -24,6 +24,8 @@ import {
   type CapabilitiesResponse,
   type EndSessionDto,
   type HealthResponse,
+  type OrganizationBrandingDto,
+  type PublicBrandingStatusDto,
   type RealtimeEndRequest,
   type RealtimeSessionDto,
   type RequestContext,
@@ -31,6 +33,7 @@ import {
   type UsageSummaryDto,
   type VoiceSessionDto,
   type VoiceTurnDto,
+  type WorkspaceBootstrapDto,
 } from "../../shared/contracts";
 import { parseQuery } from "../../shared/validate";
 import { createLogger } from "../../server/lib/observability";
@@ -95,6 +98,13 @@ export interface ApiClient {
   usage(sessionId?: string | null, signal?: AbortSignal): Promise<ApiResult<UsageSummaryDto>>;
   analytics(signal?: AbortSignal): Promise<ApiResult<AnalyticsSummaryDto>>;
   tenantCommercialSummary(signal?: AbortSignal): Promise<ApiResult<TenantCommercialSummaryDto>>;
+  workspaceBootstrap(signal?: AbortSignal): Promise<ApiResult<WorkspaceBootstrapDto>>;
+  branding(signal?: AbortSignal): Promise<ApiResult<OrganizationBrandingDto>>;
+  updateBranding(
+    patch: Partial<Pick<OrganizationBrandingDto, "displayName" | "logoUrl" | "faviconUrl" | "primaryColor" | "accentColor" | "theme">>,
+    signal?: AbortSignal
+  ): Promise<ApiResult<OrganizationBrandingDto>>;
+  publicBrandingStatus(signal?: AbortSignal): Promise<ApiResult<PublicBrandingStatusDto>>;
   sessions(signal?: AbortSignal): Promise<ApiResult<unknown[]>>;
   agent(id: string, signal?: AbortSignal): Promise<ApiResult<AgentDto>>;
   createAgent(input: Record<string, unknown>, signal?: AbortSignal): Promise<ApiResult<AgentDto>>;
@@ -345,6 +355,14 @@ export function createApiClient(): ApiClient {
     analytics: (signal) => run<AnalyticsSummaryDto>("GET", "/api/analytics", undefined, signal),
     tenantCommercialSummary: (signal) =>
       run<TenantCommercialSummaryDto>("GET", "/api/tenant/subscription", undefined, signal),
+    workspaceBootstrap: (signal) =>
+      run<WorkspaceBootstrapDto>("GET", "/api/workspace/bootstrap", undefined, signal),
+    branding: (signal) =>
+      run<OrganizationBrandingDto>("GET", "/api/workspace/branding", undefined, signal),
+    updateBranding: (patch, signal) =>
+      run<OrganizationBrandingDto>("PATCH", "/api/workspace/branding", patch, signal),
+    publicBrandingStatus: (signal) =>
+      run<PublicBrandingStatusDto>("GET", "/api/public/branding", undefined, signal),
     sessions: (signal) => run<unknown[]>("GET", "/api/voice/sessions", undefined, signal),
     agent: (id, signal) => run<AgentDto>("GET", `/api/agents/${encodeURIComponent(id)}`, undefined, signal),
     createAgent: (input, signal) => run<AgentDto>("POST", "/api/agents", input, signal),
