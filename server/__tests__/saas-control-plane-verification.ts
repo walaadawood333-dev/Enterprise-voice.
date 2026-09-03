@@ -124,7 +124,7 @@ async function main() {
   check(bravoSummary.subscription?.organizationId === orgB.id, "second tenant receives only its subscription");
   check(bravoSummary.usage.monthlyMinutes === 3.4, "monthly usage aggregation is not truncated at repository page limits");
   check(alphaSummary.capabilities.find((item) => item.feature === "voice_calls")?.source === "override", "tenant UI receives effective entitlement source");
-  check(alphaSummary.billing.status === "not_configured" && alphaSummary.billing.provider === null, "payment provider is explicitly not configured");
+  check(alphaSummary.billing.status === "NOT_CONFIGURED" && alphaSummary.billing.provider === null, "payment provider is explicitly not configured");
 
   const billing = createBillingService({ db, logger });
   await rejectsWith(

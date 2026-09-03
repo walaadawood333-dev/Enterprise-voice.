@@ -47,6 +47,19 @@ export interface EntitlementEngine {
     limitKey: keyof OrganizationLimits,
     currentValue: number
   ): Promise<void>;
+  /** Authoritative usage is read from tenant-scoped repositories, never supplied by an API caller. */
+  getCurrentLimitUsage(organizationId: string): Promise<Record<keyof OrganizationLimits, number>>;
+  checkCurrentLimit(
+    organizationId: string,
+    limitKey: keyof OrganizationLimits
+  ): Promise<{ allowed: boolean; limit: number; current: number; remaining: number }>;
+  assertCurrentLimit(organizationId: string, limitKey: keyof OrganizationLimits): Promise<void>;
+  /** Serializes check + write in this API process so concurrent requests cannot bypass a count limit. */
+  withinCurrentLimit<T>(
+    organizationId: string,
+    limitKey: keyof OrganizationLimits,
+    operation: () => Promise<T>
+  ): Promise<T>;
   getSubscription(organizationId: string): Promise<SubscriptionWithPlan | null>;
   isSubscriptionActive(organizationId: string): Promise<boolean>;
 }
@@ -174,6 +187,8 @@ export function createEntitlementEngine(db: Db): EntitlementEngine {
     });
   };
 
+  const limitQueues = new Map<string, Promise<void>>();
+
   const engine: EntitlementEngine = {
     async hasFeature(organizationId, feature) {
       if (!isKnownFeature(feature)) return false;
@@ -220,6 +235,78 @@ export function createEntitlementEngine(db: Db): EntitlementEngine {
           `The organization has reached ${limitKey} (${result.current}/${result.limit}).`,
           { status: 403 }
         );
+      }
+    },
+
+    async getCurrentLimitUsage(organizationId) {
+      const monthStart = new Date();
+      monthStart.setUTCDate(1);
+      monthStart.setUTCHours(0, 0, 0, 0);
+      const [users, agents, campaigns, connectors, usage] = await Promise.all([
+        db.users.listByOrg(organizationId),
+        db.agents.listByOrg(organizationId),
+        db.campaigns.count(organizationId),
+        db.connectors.count(organizationId),
+        db.usage.listByOrg(organizationId),
+      ]);
+      const audioSeconds = usage
+        .filter(
+          (event) =>
+            event.eventType === "audio_seconds" &&
+            Number.isFinite(event.quantity) &&
+            event.quantity > 0 &&
+            new Date(event.createdAt) >= monthStart
+        )
+        .reduce((total, event) => total + event.quantity, 0);
+      return {
+        maxUsers: users.length,
+        maxAgents: agents.length,
+        maxMonthlyMinutes: audioSeconds / 60,
+        maxCampaigns: campaigns,
+        maxConnectors: connectors,
+      };
+    },
+
+    async checkCurrentLimit(organizationId, limitKey) {
+      const [limits, usage] = await Promise.all([
+        engine.getEffectiveLimits(organizationId),
+        engine.getCurrentLimitUsage(organizationId),
+      ]);
+      const limit = limits[limitKey];
+      const current = usage[limitKey];
+      return {
+        allowed: current < limit,
+        limit,
+        current,
+        remaining: Math.max(0, limit - current),
+      };
+    },
+
+    async assertCurrentLimit(organizationId, limitKey) {
+      const result = await engine.checkCurrentLimit(organizationId, limitKey);
+      if (!result.allowed) {
+        throw new ApiError(
+          "FORBIDDEN",
+          `The organization has reached ${limitKey} (${Math.round(result.current * 10) / 10}/${result.limit}).`,
+          { status: 403 }
+        );
+      }
+    },
+
+    async withinCurrentLimit(organizationId, limitKey, operation) {
+      const queueKey = `${organizationId}:${limitKey}`;
+      const predecessor = limitQueues.get(queueKey) ?? Promise.resolve();
+      let release!: () => void;
+      const gate = new Promise<void>((resolveGate) => { release = resolveGate; });
+      const queued = predecessor.then(() => gate);
+      limitQueues.set(queueKey, queued);
+      await predecessor;
+      try {
+        await engine.assertCurrentLimit(organizationId, limitKey);
+        return await operation();
+      } finally {
+        release();
+        if (limitQueues.get(queueKey) === queued) limitQueues.delete(queueKey);
       }
     },
 

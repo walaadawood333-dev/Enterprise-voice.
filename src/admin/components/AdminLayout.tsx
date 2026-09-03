@@ -6,7 +6,7 @@
  */
 
 import { Outlet, NavLink } from "react-router-dom";
-import { LayoutDashboard, Building2, CreditCard, Shield, Settings, Server, BadgeCheck, ScrollText } from "lucide-react";
+import { LayoutDashboard, Building2, CreditCard, Shield, Settings, Server, BadgeCheck, ScrollText, BarChart3 } from "lucide-react";
 import { cn } from "@/utils/cn";
 
 const NAV_ITEMS = [
@@ -16,6 +16,7 @@ const NAV_ITEMS = [
   { to: "/admin/subscriptions", icon: ScrollText, label: "Subscriptions" },
   { to: "/admin/entitlements", icon: BadgeCheck, label: "Entitlements" },
   { to: "/admin/providers", icon: Server, label: "Providers" },
+  { to: "/admin/usage", icon: BarChart3, label: "Usage" },
   { to: "/admin/audit", icon: Shield, label: "Audit Log" },
   { to: "/admin/settings", icon: Settings, label: "Settings" },
 ];

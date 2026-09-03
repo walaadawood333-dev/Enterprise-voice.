@@ -25,6 +25,7 @@ import {
   type ConnectorControlDto,
   type ConnectorTestResult,
   type TenantConnectorControlCenterDto,
+  type TenantUsageFoundationDto,
   type EndSessionDto,
   type HealthResponse,
   type OrganizationBrandingDto,
@@ -101,6 +102,7 @@ export interface ApiClient {
   usage(sessionId?: string | null, signal?: AbortSignal): Promise<ApiResult<UsageSummaryDto>>;
   analytics(signal?: AbortSignal): Promise<ApiResult<AnalyticsSummaryDto>>;
   tenantCommercialSummary(signal?: AbortSignal): Promise<ApiResult<TenantCommercialSummaryDto>>;
+  usageFoundation(signal?: AbortSignal): Promise<ApiResult<TenantUsageFoundationDto>>;
   workspaceBootstrap(signal?: AbortSignal): Promise<ApiResult<WorkspaceBootstrapDto>>;
   branding(signal?: AbortSignal): Promise<ApiResult<OrganizationBrandingDto>>;
   updateBranding(
@@ -374,6 +376,8 @@ export function createApiClient(): ApiClient {
     analytics: (signal) => run<AnalyticsSummaryDto>("GET", "/api/analytics", undefined, signal),
     tenantCommercialSummary: (signal) =>
       run<TenantCommercialSummaryDto>("GET", "/api/tenant/subscription", undefined, signal),
+    usageFoundation: (signal) =>
+      run<TenantUsageFoundationDto>("GET", "/api/usage/foundation", undefined, signal),
     workspaceBootstrap: (signal) =>
       run<WorkspaceBootstrapDto>("GET", "/api/workspace/bootstrap", undefined, signal),
     branding: (signal) =>

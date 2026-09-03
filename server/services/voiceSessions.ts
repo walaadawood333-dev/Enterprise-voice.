@@ -175,20 +175,7 @@ export function createVoiceOrchestrator(input: {
 
   const assertVoiceAccess = async (organizationId: string) => {
     await entitlements.assertFeature(organizationId, "voice_calls");
-    const monthStart = new Date();
-    monthStart.setUTCDate(1);
-    monthStart.setUTCHours(0, 0, 0, 0);
-    const seconds = (await db.usage.listByOrg(organizationId))
-      .filter((event) => event.eventType === "audio_seconds" && new Date(event.createdAt) >= monthStart)
-      .reduce((total, event) => total + event.quantity, 0);
-    const limits = await entitlements.getEffectiveLimits(organizationId);
-    if (seconds / 60 >= limits.maxMonthlyMinutes) {
-      throw new ApiError(
-        "FORBIDDEN",
-        `The organization has reached maxMonthlyMinutes (${Math.round(seconds / 60)}/${limits.maxMonthlyMinutes}).`,
-        { status: 403 }
-      );
-    }
+    await entitlements.assertCurrentLimit(organizationId, "maxMonthlyMinutes");
   };
 
   const loadAgent = async (organizationId: string, agentId: string): Promise<AgentRow> => {

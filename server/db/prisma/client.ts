@@ -8,7 +8,7 @@
 
 import { ApiError } from "../../lib/observability";
 
-/** Minimal shape of the six delegates this repository touches. */
+/** Structural subset of Prisma delegates used by the production repository. */
 export interface PrismaDelegate<TRecord = Record<string, unknown>> {
   findUnique(args: { where: Record<string, unknown> }): Promise<TRecord | null>;
   findFirst(args?: {
@@ -39,6 +39,9 @@ export interface PrismaClientLike {
   usageEvent: PrismaDelegate;
   call: PrismaDelegate;
   callEvent: PrismaDelegate;
+  campaign: PrismaDelegate;
+  dataConnector: PrismaDelegate;
+  dataConnectorFieldMapping: PrismaDelegate;
   plan: PrismaDelegate;
   subscription: PrismaDelegate;
   organizationEntitlement: PrismaDelegate;

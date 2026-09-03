@@ -250,13 +250,7 @@ export function createVoiceService(
       language: AgentLanguage;
     }): Promise<VoiceSessionDto> {
       await entitlements.assertFeature(input.organizationId, "voice_calls");
-      const effectiveLimits = await entitlements.getEffectiveLimits(input.organizationId);
-      const monthlySeconds = (await db.usage.listByOrg(input.organizationId))
-        .filter((event) => event.eventType === "audio_seconds" && event.createdAt.slice(0, 7) === new Date().toISOString().slice(0, 7))
-        .reduce((total, event) => total + event.quantity, 0);
-      if (monthlySeconds / 60 >= effectiveLimits.maxMonthlyMinutes) {
-        throw new ApiError("FORBIDDEN", "The monthly voice minute limit has been reached.");
-      }
+      await entitlements.assertCurrentLimit(input.organizationId, "maxMonthlyMinutes");
       const agentId = input.agentId || agents.defaultAgentId;
       const agent = await agents.require(input.organizationId, agentId);
       const sessionId = newId("vsn");
@@ -304,6 +298,7 @@ export function createVoiceService(
       utterance?: string;
     }): Promise<VoiceTurnDto> {
       await entitlements.assertFeature(input.organizationId, "voice_calls");
+      await entitlements.assertCurrentLimit(input.organizationId, "maxMonthlyMinutes");
       const session = await getOwned(input.sessionId, input.organizationId);
       const agent = await db.agents.get(session.organizationId, session.agentId);
       if (!agent) throw notFound("Agent");
@@ -559,6 +554,7 @@ export {
   type BrandingAssetStore,
 } from "./tenantBranding";
 export { createWorkspaceBootstrapService, type WorkspaceBootstrapService } from "./workspace";
+export { createUsageFoundationService, type UsageFoundationService } from "./usageFoundation";
 
 // ─── Phase 10C — Governance Services ─────────────────────────────────────
 export { createComplianceService, type ComplianceService } from "./compliance";

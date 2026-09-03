@@ -64,12 +64,18 @@ export function createBillingService({ db, logger }: { db: Db; logger: Logger })
       for (const event of rows) {
         byEventType[event.eventType] = (byEventType[event.eventType] ?? 0) + event.quantity;
       }
+      const sessionIds = new Set(
+        rows
+          .filter((event) => event.eventType === "voice_session" || event.eventType === "session_started")
+          .map((event) => event.sessionId)
+          .filter((sessionId): sessionId is string => Boolean(sessionId))
+      );
       return {
         organizationId,
         periodStart: start.toISOString(),
         periodEnd: end.toISOString(),
         byEventType,
-        totalSessions: byEventType.voice_session ?? byEventType.session_started ?? 0,
+        totalSessions: sessionIds.size || (byEventType.voice_session ?? 0) + (byEventType.session_started ?? 0),
         totalAiRequests: byEventType.ai_request ?? 0,
         totalAudioSeconds: byEventType.audio_seconds ?? 0,
         totalCharacters: byEventType.characters ?? 0,
@@ -116,6 +122,7 @@ export function createBillingService({ db, logger }: { db: Db; logger: Logger })
 
     async getBillingConfig() {
       return {
+        status: "NOT_CONFIGURED",
         autoGenerateInvoices: false,
         autoProcessPayments: false,
         paymentProvider: null,

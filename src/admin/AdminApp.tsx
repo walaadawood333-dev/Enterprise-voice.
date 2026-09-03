@@ -13,6 +13,7 @@ import { AdminPlans } from "./pages/AdminPlans";
 import { AdminSubscriptions } from "./pages/AdminSubscriptions";
 import { AdminEntitlements } from "./pages/AdminEntitlements";
 import { AdminProviders } from "./pages/AdminProviders";
+import { AdminUsage } from "./pages/AdminUsage";
 
 export function AdminApp() {
   return (
@@ -26,6 +27,7 @@ export function AdminApp() {
         <Route path="subscriptions" element={<AdminSubscriptions />} />
         <Route path="entitlements" element={<AdminEntitlements />} />
         <Route path="providers" element={<AdminProviders />} />
+        <Route path="usage" element={<AdminUsage />} />
         <Route path="*" element={<Navigate to="/admin/overview" replace />} />
       </Route>
     </Routes>

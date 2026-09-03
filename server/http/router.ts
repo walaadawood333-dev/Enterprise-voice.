@@ -31,7 +31,7 @@ import { createMemoryDb, createStore, newId, SCHEMA_SQL, type Db } from "../db/s
 import { ApiError, configInvalid, createLogger, notFound, rateLimited, toApiError, type Logger } from "../lib/observability";
 import { resolveEngine, type VoiceEngine } from "../providers";
 import { createIntegrations, type IntegrationRegistry } from "../integrations";
-import { createAgentService, createUsageService, createVoiceService, createEntitlementEngine, seedDefaultPlans, createSaasControlPlaneService, createTenantBrandingService, createWorkspaceBootstrapService, createComplianceService, createDNCService, createReportService, createAuditService, type EntitlementEngine, type SaasControlPlaneService, type TenantBrandingService, type WorkspaceBootstrapService, type ComplianceService, type DNCService, type ReportService, type AuditService } from "../services";
+import { createAgentService, createUsageService, createVoiceService, createEntitlementEngine, seedDefaultPlans, createSaasControlPlaneService, createTenantBrandingService, createWorkspaceBootstrapService, createUsageFoundationService, createComplianceService, createDNCService, createReportService, createAuditService, type EntitlementEngine, type SaasControlPlaneService, type TenantBrandingService, type WorkspaceBootstrapService, type UsageFoundationService, type ComplianceService, type DNCService, type ReportService, type AuditService } from "../services";
 import { createAuthService } from "../services/auth";
 import { createVoiceOrchestrator } from "../services/voiceSessions";
 import { createConnectorService } from "../services/connectors";
@@ -134,6 +134,7 @@ export interface App {
   saas: SaasControlPlaneService;
   tenantBranding: TenantBrandingService;
   workspaceBootstrap: WorkspaceBootstrapService;
+  usageFoundation: UsageFoundationService;
   /** Phase 10C — Governance services */
   compliance: ComplianceService;
   dnc: DNCService;
@@ -208,6 +209,7 @@ export function createApp(options: CreateAppOptions = {}): App {
   const saas = createSaasControlPlaneService({ db, entitlements, audit });
   const tenantBranding = createTenantBrandingService({ db, entitlements, audit });
   const workspaceBootstrap = createWorkspaceBootstrapService(db, entitlements);
+  const usageFoundation = createUsageFoundationService({ db, entitlements });
 
   const agents = createAgentService(db);
   const voice = createVoiceService(db, engine, agents, logger, entitlements);
@@ -345,6 +347,7 @@ export function createApp(options: CreateAppOptions = {}): App {
     saas,
     tenantBranding,
     workspaceBootstrap,
+    usageFoundation,
     compliance,
     dnc,
     reports,
@@ -649,23 +652,20 @@ export function createApp(options: CreateAppOptions = {}): App {
     if (path === "/api/agents" && method === "POST") {
       authorize(ctx, ["owner", "admin", "manager"]);
       await app.entitlements.assertFeature(ctx.organizationId, "ai_agents");
-      await app.entitlements.assertLimit(
-        ctx.organizationId,
-        "maxAgents",
-        (await db.agents.listByOrg(ctx.organizationId)).length
-      );
       const body = asObject(request.body);
       return ok(
-        services.agents.create(ctx.organizationId, {
-          name: String(body.name ?? ""),
-          description: optionalString(body, "description", 500),
-          language: optionalString(body, "language", 8),
-          industry: optionalString(body, "industry", 40),
-          voice: optionalString(body, "voice", 40),
-          systemPrompt: optionalString(body, "systemPrompt", 4000),
-          welcomeMessage: optionalString(body, "welcomeMessage", 600),
-          status: optionalString(body, "status", 16),
-        }),
+        await app.entitlements.withinCurrentLimit(ctx.organizationId, "maxAgents", () =>
+          services.agents.create(ctx.organizationId, {
+            name: String(body.name ?? ""),
+            description: optionalString(body, "description", 500),
+            language: optionalString(body, "language", 8),
+            industry: optionalString(body, "industry", 40),
+            voice: optionalString(body, "voice", 40),
+            systemPrompt: optionalString(body, "systemPrompt", 4000),
+            welcomeMessage: optionalString(body, "welcomeMessage", 600),
+            status: optionalString(body, "status", 16),
+          })
+        ),
         201
       );
     }
@@ -777,6 +777,8 @@ export function createApp(options: CreateAppOptions = {}): App {
 
     if (path === "/api/telephony/calls" && method === "POST") {
       requireSession(ctx);
+      await app.entitlements.assertFeature(ctx.organizationId, "voice_calls");
+      await app.entitlements.assertCurrentLimit(ctx.organizationId, "maxMonthlyMinutes");
       const body = asObject(request.body);
       return ok(
         app.telephony.initiateCall({
@@ -793,6 +795,8 @@ export function createApp(options: CreateAppOptions = {}): App {
 
     if (path === "/api/telephony/calls/simulate/inbound" && method === "POST") {
       requireSession(ctx);
+      await app.entitlements.assertFeature(ctx.organizationId, "voice_calls");
+      await app.entitlements.assertCurrentLimit(ctx.organizationId, "maxMonthlyMinutes");
       const body = asObject(request.body);
       const failAt = optionalString(body, "failAt", 16);
       return ok(
@@ -808,6 +812,8 @@ export function createApp(options: CreateAppOptions = {}): App {
 
     if (path === "/api/telephony/calls/simulate/outbound" && method === "POST") {
       requireSession(ctx);
+      await app.entitlements.assertFeature(ctx.organizationId, "voice_calls");
+      await app.entitlements.assertCurrentLimit(ctx.organizationId, "maxMonthlyMinutes");
       const body = asObject(request.body);
       return ok(
         app.telephony.simulateOutboundCall({
@@ -1195,8 +1201,20 @@ export function createApp(options: CreateAppOptions = {}): App {
       return methodNotAllowed(["GET", "DELETE", "PATCH"]);
     }
 
-    /* ── usage / analytics (metering only) ── */
+    /* ── persisted usage, limits, and billing foundation ── */
+    if (path === "/api/usage/foundation" && method === "GET") {
+      requireSession(ctx);
+      return ok(
+        app.usageFoundation.tenant(
+          ctx.organizationId,
+          searchParams.get("periodStart"),
+          searchParams.get("periodEnd")
+        )
+      );
+    }
+
     if (path === "/api/usage" && method === "GET") {
+      requireSession(ctx);
       const sessionId = (request.query?.sessionId ?? "").trim() || null;
       return ok(services.usage.summary(ctx.organizationId, sessionId));
     }
@@ -1512,28 +1530,33 @@ export function createApp(options: CreateAppOptions = {}): App {
 
     if (path === "/api/workspace/campaigns" && method === "POST") {
       requireSession(ctx);
+      authorize(ctx, ["owner", "admin", "manager"]);
+      await app.entitlements.assertFeature(ctx.organizationId, "campaigns");
       const body = asObject(request.body);
-      
       const name = optionalString(body, "name", 120);
       if (!name) throw new ApiError("BAD_REQUEST", "Campaign name is required");
 
-      const campaign = await db.campaigns.create({
-        organizationId: ctx.organizationId,
-        name,
-        description: optionalString(body, "description", 500) || "",
-        agentId: optionalString(body, "agentId", 64) || null,
-        status: "draft",
-        direction: (body.direction === "INBOUND" || body.direction === "OUTBOUND") 
-          ? body.direction 
-          : "OUTBOUND",
-        scheduledAt: typeof body.scheduledAt === "string" ? body.scheduledAt : null,
-        startedAt: null,
-        completedAt: null,
-        totalContacts: typeof body.totalContacts === "number" ? body.totalContacts : 0,
-        configuration: typeof body.configuration === "object" && body.configuration !== null
-          ? body.configuration as Record<string, string | number | boolean | null>
-          : {},
-      });
+      const campaign = await app.entitlements.withinCurrentLimit(
+        ctx.organizationId,
+        "maxCampaigns",
+        () => db.campaigns.create({
+          organizationId: ctx.organizationId,
+          name,
+          description: optionalString(body, "description", 500) || "",
+          agentId: optionalString(body, "agentId", 64) || null,
+          status: "draft",
+          direction: body.direction === "INBOUND" || body.direction === "inbound"
+            ? "inbound"
+            : "outbound",
+          scheduledAt: typeof body.scheduledAt === "string" ? body.scheduledAt : null,
+          startedAt: null,
+          completedAt: null,
+          totalContacts: typeof body.totalContacts === "number" ? Math.max(0, Math.floor(body.totalContacts)) : 0,
+          configuration: typeof body.configuration === "object" && body.configuration !== null
+            ? body.configuration as Record<string, string | number | boolean | null>
+            : {},
+        })
+      );
 
       return ok(campaign, 201);
     }
@@ -2103,17 +2126,21 @@ export function createApp(options: CreateAppOptions = {}): App {
         ? app.connectorProviderRegistry.getProvider(providerId)
         : undefined;
       if (!provider) throw new ApiError("BAD_REQUEST", "Connector provider is not registered.");
-      const connector = await app.connectors.createConnector(
+      const connector = await app.entitlements.withinCurrentLimit(
         ctx.organizationId,
-        {
-          name: sanitizeName(body.name),
-          provider: providerId,
-          type: provider.info.type,
-          syncMode: body.syncMode as any,
-          scheduleCron: body.scheduleCron as string,
-          configuration: body.configuration as Record<string, any>,
-        },
-        { actorId: ctx.userId }
+        "maxConnectors",
+        () => app.connectors.createConnector(
+          ctx.organizationId,
+          {
+            name: sanitizeName(body.name),
+            provider: providerId,
+            type: provider.info.type,
+            syncMode: body.syncMode as any,
+            scheduleCron: body.scheduleCron as string,
+            configuration: body.configuration as Record<string, any>,
+          },
+          { actorId: ctx.userId }
+        )
       );
       return ok(await app.connectors.getControlConnector(ctx.organizationId, connector.id), 201);
     }
@@ -2830,6 +2857,17 @@ export function createApp(options: CreateAppOptions = {}): App {
       return ok(events);
     }
 
+    /* ── Platform Usage Foundation ── */
+    if (path === "/api/admin/usage" && method === "GET") {
+      requirePlatformAdmin(ctx);
+      return ok(
+        app.usageFoundation.platform(
+          searchParams.get("periodStart"),
+          searchParams.get("periodEnd")
+        )
+      );
+    }
+
     /* ── Platform Providers & Connectors Control Center ── */
     if (path === "/api/admin/providers" && method === "GET") {
       requirePlatformAdmin(ctx);
@@ -3272,50 +3310,15 @@ export function createApp(options: CreateAppOptions = {}): App {
       });
     }
     
-    // Platform usage analytics
+    // Platform usage analytics — compatibility alias for the same persisted aggregation.
     if (path === "/api/admin/v2/usage" && method === "GET") {
       requirePlatformAdmin(ctx);
-      
-      const orgs = await db.organizations.list();
-      
-      const usageByOrg = await Promise.all(
-        orgs.map(async (org) => {
-          const usage = await db.usage.listByOrg(org.id);
-          const sessions = await db.sessions.listByOrg(org.id);
-          const calls = await db.calls.listByOrg(org.id);
-          
-          const audioSeconds = usage
-            .filter((u) => u.eventType === "audio_seconds")
-            .reduce((sum, u) => sum + u.quantity, 0);
-          
-          const aiRequests = usage.filter((u) => u.eventType === "ai_request").length;
-          
-          return {
-            organizationId: org.id,
-            organizationName: org.name,
-            sessions: sessions.length,
-            calls: calls.length,
-            audioSeconds,
-            aiRequests,
-          };
-        })
+      return ok(
+        app.usageFoundation.platform(
+          searchParams.get("periodStart"),
+          searchParams.get("periodEnd")
+        )
       );
-      
-      const totals = usageByOrg.reduce(
-        (acc, curr) => ({
-          sessions: acc.sessions + curr.sessions,
-          calls: acc.calls + curr.calls,
-          audioSeconds: acc.audioSeconds + curr.audioSeconds,
-          aiRequests: acc.aiRequests + curr.aiRequests,
-        }),
-        { sessions: 0, calls: 0, audioSeconds: 0, aiRequests: 0 }
-      );
-      
-      return ok({
-        byOrganization: usageByOrg,
-        totals,
-        generatedAt: new Date().toISOString(),
-      });
     }
     
     // Platform health

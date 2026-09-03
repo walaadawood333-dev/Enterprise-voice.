@@ -350,7 +350,7 @@ export function createSaasControlPlaneService(input: {
           campaigns: campaigns.length,
           connectors: connectors.length,
         },
-        billing: { status: "not_configured", provider: null },
+        billing: { status: "NOT_CONFIGURED", provider: null },
       };
     },
   };

@@ -1085,7 +1085,85 @@ export interface TenantCommercialSummaryDto {
     campaigns: number;
     connectors: number;
   };
-  billing: { status: "not_configured"; provider: null };
+  billing: { status: "NOT_CONFIGURED"; provider: null };
+}
+
+export type UsageLimitKey = keyof OrganizationLimits;
+
+export interface UsageLimitStateDto {
+  key: UsageLimitKey;
+  used: number;
+  limit: number;
+  remaining: number;
+  reached: boolean;
+}
+
+export interface UsageMetricsDto {
+  voice: {
+    audioSeconds: number;
+    minutes: number;
+    eventCount: number;
+  };
+  sessions: {
+    total: number;
+    active: number;
+    completed: number;
+    failed: number;
+  };
+  calls: {
+    total: number;
+    inbound: number;
+    outbound: number;
+    completed: number;
+    failed: number;
+    durationSeconds: number;
+  };
+  campaigns: {
+    total: number;
+    draft: number;
+    scheduled: number;
+    running: number;
+    completed: number;
+    failed: number;
+    configuredContacts: number;
+    processedContacts: number;
+    completedCalls: number;
+    failedCalls: number;
+  };
+}
+
+export interface TenantUsageFoundationDto {
+  organizationId: string;
+  period: { start: string; end: string; timezone: "UTC" };
+  usage: UsageMetricsDto;
+  limits: Record<UsageLimitKey, UsageLimitStateDto>;
+  entitlements: Array<{
+    feature: Feature;
+    enabled: boolean;
+    source: "plan" | "override" | "unavailable";
+  }>;
+  subscription: { planName: string; status: SubscriptionStatus } | null;
+  billing: {
+    status: "NOT_CONFIGURED";
+    provider: null;
+    invoiceGeneration: "UNAVAILABLE";
+    paymentProcessing: "UNAVAILABLE";
+  };
+  empty: boolean;
+}
+
+export interface PlatformUsageFoundationDto {
+  period: TenantUsageFoundationDto["period"];
+  totals: UsageMetricsDto;
+  byOrganization: Array<{
+    organizationId: string;
+    organizationName: string;
+    usage: UsageMetricsDto;
+    empty: boolean;
+  }>;
+  billing: TenantUsageFoundationDto["billing"];
+  empty: boolean;
+  generatedAt: string;
 }
 
 /** Workspace bootstrap response — Phase 10A */
@@ -2462,6 +2540,8 @@ export interface WebhookEventResult {
 
 /** Billing configuration */
 export interface BillingConfig {
+  /** Explicit provider state; no provider means billing mutations fail closed. */
+  status: "NOT_CONFIGURED";
   /** Enable automatic invoice generation */
   autoGenerateInvoices: boolean;
   /** Enable automatic payment processing */
