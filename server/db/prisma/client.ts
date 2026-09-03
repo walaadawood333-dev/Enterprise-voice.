@@ -24,6 +24,7 @@ export interface PrismaDelegate<TRecord = Record<string, unknown>> {
   create(args: { data: Record<string, unknown> }): Promise<TRecord>;
   update(args: { where: Record<string, unknown>; data: Record<string, unknown> }): Promise<TRecord>;
   updateMany(args: { where: Record<string, unknown>; data: Record<string, unknown> }): Promise<{ count: number }>;
+  upsert(args: { where: Record<string, unknown>; create: Record<string, unknown>; update: Record<string, unknown> }): Promise<TRecord>;
   delete(args: { where: Record<string, unknown> }): Promise<TRecord>;
   deleteMany(args: { where: Record<string, unknown> }): Promise<{ count: number }>;
   count(args?: { where?: Record<string, unknown> }): Promise<number>;
@@ -38,6 +39,11 @@ export interface PrismaClientLike {
   usageEvent: PrismaDelegate;
   call: PrismaDelegate;
   callEvent: PrismaDelegate;
+  plan: PrismaDelegate;
+  subscription: PrismaDelegate;
+  organizationEntitlement: PrismaDelegate;
+  organizationBranding: PrismaDelegate;
+  auditEvent: PrismaDelegate;
   $connect?(): Promise<unknown>;
   $disconnect?(): Promise<unknown>;
 }

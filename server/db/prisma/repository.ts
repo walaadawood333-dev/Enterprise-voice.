@@ -17,8 +17,14 @@ import type {
   CallRow,
   CallStatus,
   MessageRow,
+  OrganizationBrandingRow,
+  OrganizationEntitlementRow,
+  OrganizationLimits,
   OrganizationRow,
   OrgRole,
+  PlanRow,
+  SubscriptionRow,
+  AuditEventRow,
   UserCredential,
   UserRow,
   UsageEventRow,
@@ -185,6 +191,99 @@ const toCallEvent = (row: Record<string, unknown> | null): CallEventRow | undefi
       }
     : undefined;
 
+
+const jsonObject = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+
+const toPlan = (row: Record<string, unknown> | null): PlanRow | undefined => {
+  if (!row) return undefined;
+  const id = str(row, "id");
+  const name = str(row, "name");
+  const identity = `${id} ${name}`.toLowerCase();
+  const derivedType: PlanRow["planType"] = identity.includes("starter")
+    ? "starter"
+    : identity.includes("professional")
+      ? "professional"
+      : identity.includes("enterprise")
+        ? "enterprise"
+        : "custom";
+  return {
+        id,
+        name,
+        // Compatibility-only classification; the plans table stores only required plan data.
+        planType: derivedType,
+        status: lower(row.status) as PlanRow["status"],
+        features: Array.isArray(row.features) ? (row.features as PlanRow["features"]) : [],
+        limits: jsonObject(row.limits) as unknown as OrganizationLimits,
+        createdAt: iso(row, "createdAt"),
+        updatedAt: iso(row, "updatedAt"),
+      };
+};
+
+const toSubscription = (row: Record<string, unknown> | null): SubscriptionRow | undefined =>
+  row
+    ? {
+        id: str(row, "id"),
+        organizationId: str(row, "organizationId"),
+        planId: str(row, "planId"),
+        status: lower(row.status) as SubscriptionRow["status"],
+        effectiveLimits: row.effectiveLimits == null
+          ? null
+          : (jsonObject(row.effectiveLimits) as unknown as OrganizationLimits),
+        trialEndsAt: isoOrNull(row, "trialEndsAt"),
+        currentPeriodStart: isoOrNull(row, "currentPeriodStart"),
+        currentPeriodEnd: isoOrNull(row, "currentPeriodEnd"),
+        cancelledAt: isoOrNull(row, "cancelledAt"),
+        startedAt: iso(row, "startedAt"),
+        createdAt: iso(row, "createdAt"),
+        updatedAt: iso(row, "updatedAt"),
+      }
+    : undefined;
+
+const toEntitlement = (
+  row: Record<string, unknown> | null
+): OrganizationEntitlementRow | undefined =>
+  row
+    ? {
+        id: str(row, "id"),
+        organizationId: str(row, "organizationId"),
+        feature: str(row, "feature") as OrganizationEntitlementRow["feature"],
+        enabled: Boolean(row.enabled),
+        reason: str(row, "reason") || null,
+        createdAt: iso(row, "createdAt"),
+        updatedAt: iso(row, "updatedAt"),
+      }
+    : undefined;
+
+const toBranding = (row: Record<string, unknown> | null): OrganizationBrandingRow | undefined =>
+  row
+    ? {
+        id: str(row, "id"),
+        organizationId: str(row, "organizationId"),
+        displayName: str(row, "displayName") || null,
+        logoUrl: str(row, "logoUrl") || null,
+        primaryColor: str(row, "primaryColor"),
+        accentColor: str(row, "accentColor"),
+        theme: str(row, "theme") as OrganizationBrandingRow["theme"],
+        createdAt: iso(row, "createdAt"),
+        updatedAt: iso(row, "updatedAt"),
+      }
+    : undefined;
+
+const toAudit = (row: Record<string, unknown> | null): AuditEventRow | undefined =>
+  row
+    ? {
+        id: str(row, "id"),
+        organizationId: str(row, "organizationId") || null,
+        actorId: str(row, "actorId") || null,
+        actorEmail: str(row, "actorEmail") || null,
+        action: str(row, "action") as AuditEventRow["action"],
+        metadata: jsonObject(row.metadata) as AuditEventRow["metadata"],
+        ipAddress: str(row, "ipAddress") || null,
+        createdAt: iso(row, "createdAt"),
+      }
+    : undefined;
+
 /** Aggregation is done with findMany + reduce to stay driver-agnostic on Decimal handling. */
 async function summarize(
   usage: PrismaDelegate,
@@ -224,7 +323,21 @@ export interface PrismaDbOptions {
 
 export async function createPrismaDb(options: PrismaDbOptions = {}): Promise<Db> {
   const client = options.client ?? (await loadPrismaClient());
-  const { organization, user, agent, voiceSession, message, usageEvent, call, callEvent } = client;
+  const {
+    organization,
+    user,
+    agent,
+    voiceSession,
+    message,
+    usageEvent,
+    call,
+    callEvent,
+    plan,
+    subscription,
+    organizationEntitlement,
+    organizationBranding,
+    auditEvent,
+  } = client;
 
   return {
     driver: "postgres",
@@ -484,6 +597,146 @@ export async function createPrismaDb(options: PrismaDbOptions = {}): Promise<Db>
           .filter(Boolean) as CallEventRow[],
       findByProviderEventId: async (provider, providerEventId) =>
         toCallEvent(await callEvent.findFirst({ where: { provider, providerEventId } })),
+    },
+
+    plans: {
+      get: async (id) => toPlan(await plan.findUnique({ where: { id } })),
+      list: async () =>
+        (await plan.findMany({ orderBy: { name: "asc" } })).map(toPlan).filter(Boolean) as PlanRow[],
+      create: async (input) =>
+        toPlan(
+          await plan.create({
+            data: {
+              id: input.id,
+              name: input.name,
+              status: upper(input.status),
+              features: input.features,
+              limits: input.limits as unknown as Record<string, unknown>,
+            },
+          })
+        )!,
+      update: async (id, changes) => {
+        const data: Record<string, unknown> = { updatedAt: new Date() };
+        if (changes.name !== undefined) data.name = changes.name;
+        if (changes.status !== undefined) data.status = upper(changes.status);
+        if (changes.features !== undefined) data.features = changes.features;
+        if (changes.limits !== undefined) data.limits = changes.limits;
+        const result = await plan.updateMany({ where: { id }, data });
+        return result.count ? toPlan(await plan.findUnique({ where: { id } })) : undefined;
+      },
+    },
+
+    subscriptions: {
+      getByOrg: async (organizationId) =>
+        toSubscription(await subscription.findFirst({ where: { organizationId } })),
+      create: async (input) =>
+        toSubscription(
+          await subscription.create({
+            data: {
+              ...(input.id ? { id: input.id } : {}),
+              organizationId: input.organizationId,
+              planId: input.planId,
+              status: upper(input.status),
+              effectiveLimits: input.effectiveLimits,
+              trialEndsAt: input.trialEndsAt ? new Date(input.trialEndsAt) : null,
+              currentPeriodStart: input.currentPeriodStart ? new Date(input.currentPeriodStart) : null,
+              currentPeriodEnd: input.currentPeriodEnd ? new Date(input.currentPeriodEnd) : null,
+              cancelledAt: input.cancelledAt ? new Date(input.cancelledAt) : null,
+              ...(input.startedAt ? { startedAt: new Date(input.startedAt) } : {}),
+            },
+          })
+        )!,
+      update: async (id, changes) => {
+        const data: Record<string, unknown> = { updatedAt: new Date() };
+        if (changes.planId !== undefined) data.planId = changes.planId;
+        if (changes.status !== undefined) data.status = upper(changes.status);
+        if (changes.effectiveLimits !== undefined) data.effectiveLimits = changes.effectiveLimits;
+        if (changes.trialEndsAt !== undefined) data.trialEndsAt = changes.trialEndsAt ? new Date(changes.trialEndsAt) : null;
+        if (changes.currentPeriodStart !== undefined) data.currentPeriodStart = changes.currentPeriodStart ? new Date(changes.currentPeriodStart) : null;
+        if (changes.currentPeriodEnd !== undefined) data.currentPeriodEnd = changes.currentPeriodEnd ? new Date(changes.currentPeriodEnd) : null;
+        if (changes.cancelledAt !== undefined) data.cancelledAt = changes.cancelledAt ? new Date(changes.cancelledAt) : null;
+        const result = await subscription.updateMany({ where: { id }, data });
+        return result.count ? toSubscription(await subscription.findUnique({ where: { id } })) : undefined;
+      },
+      listAll: async () =>
+        (await subscription.findMany({ orderBy: { createdAt: "desc" } }))
+          .map(toSubscription)
+          .filter(Boolean) as SubscriptionRow[],
+    },
+
+    entitlements: {
+      get: async (organizationId, feature) =>
+        toEntitlement(await organizationEntitlement.findFirst({ where: { organizationId, feature } })),
+      listByOrg: async (organizationId) =>
+        (await organizationEntitlement.findMany({ where: { organizationId }, orderBy: { feature: "asc" } }))
+          .map(toEntitlement)
+          .filter(Boolean) as OrganizationEntitlementRow[],
+      upsert: async (input) =>
+        toEntitlement(
+          await organizationEntitlement.upsert({
+            where: {
+              organizationId_feature: { organizationId: input.organizationId, feature: input.feature },
+            },
+            create: {
+              organizationId: input.organizationId,
+              feature: input.feature,
+              enabled: input.enabled,
+              reason: input.reason,
+            },
+            update: { enabled: input.enabled, reason: input.reason, updatedAt: new Date() },
+          })
+        )!,
+      remove: async (organizationId, feature) =>
+        (await organizationEntitlement.deleteMany({ where: { organizationId, feature } })).count > 0,
+    },
+
+    branding: {
+      getByOrg: async (organizationId) =>
+        toBranding(await organizationBranding.findFirst({ where: { organizationId } })),
+      upsert: async (input) =>
+        toBranding(
+          await organizationBranding.upsert({
+            where: { organizationId: input.organizationId },
+            create: { ...input },
+            update: { ...input, updatedAt: new Date() },
+          })
+        )!,
+      update: async (organizationId, changes) => {
+        const result = await organizationBranding.updateMany({
+          where: { organizationId },
+          data: { ...changes, updatedAt: new Date() },
+        });
+        return result.count
+          ? toBranding(await organizationBranding.findFirst({ where: { organizationId } }))
+          : undefined;
+      },
+    },
+
+    audit: {
+      create: async (input) =>
+        toAudit(
+          await auditEvent.create({
+            data: {
+              organizationId: input.organizationId,
+              actorId: input.actorId,
+              actorEmail: input.actorEmail,
+              action: input.action,
+              metadata: input.metadata,
+              ipAddress: input.ipAddress,
+            },
+          })
+        )!,
+      listByOrg: async (organizationId, limit) =>
+        (await auditEvent.findMany({
+          where: { organizationId },
+          orderBy: { createdAt: "desc" },
+          ...(limit ? { take: limit } : {}),
+        })).map(toAudit).filter(Boolean) as AuditEventRow[],
+      listAll: async (limit) =>
+        (await auditEvent.findMany({
+          orderBy: { createdAt: "desc" },
+          ...(limit ? { take: limit } : {}),
+        })).map(toAudit).filter(Boolean) as AuditEventRow[],
     },
 
     reset: async () => {

@@ -10,6 +10,8 @@ import { AdminLayout } from "./components/AdminLayout";
 import { AdminOverview } from "./pages/AdminOverview";
 import { AdminOrganizations } from "./pages/AdminOrganizations";
 import { AdminPlans } from "./pages/AdminPlans";
+import { AdminSubscriptions } from "./pages/AdminSubscriptions";
+import { AdminEntitlements } from "./pages/AdminEntitlements";
 
 export function AdminApp() {
   return (
@@ -20,6 +22,8 @@ export function AdminApp() {
         <Route path="organizations" element={<AdminOrganizations />} />
         <Route path="organizations/:id" element={<AdminOrganizations />} />
         <Route path="plans" element={<AdminPlans />} />
+        <Route path="subscriptions" element={<AdminSubscriptions />} />
+        <Route path="entitlements" element={<AdminEntitlements />} />
         <Route path="*" element={<Navigate to="/admin/overview" replace />} />
       </Route>
     </Routes>

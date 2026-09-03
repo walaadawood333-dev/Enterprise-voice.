@@ -63,6 +63,13 @@ async function buildApp() {
         : undefined;
 
   const secrets = readRealtimeSecrets();
+  const telephonyProviders: import("../telephony/provider").TelephonyProvider[] = [];
+  if (env.telephony.configured && env.telephony.activeProvider === "signalwire") {
+    const { SignalWireProvider } = await import("../telephony/providers/signalwire");
+    const provider = new SignalWireProvider(env, logger);
+    await provider.initialize();
+    telephonyProviders.push(provider);
+  }
 
   return createApp({
     envSource: process.env,
@@ -70,6 +77,7 @@ async function buildApp() {
     db,
     secrets,
     auth,
+    telephonyProviders,
     realtime: env.realtime.enabled
       ? (ctx) =>
           createRealtimeService(ctx.env, ctx.db, ctx.logger, ctx.agents, secrets, ctx.voiceEngine)

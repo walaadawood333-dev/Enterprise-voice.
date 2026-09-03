@@ -551,8 +551,8 @@ export function createPlatformAdminService(db: Db, logger: Logger): PlatformAdmi
         },
         subscriptions: {
           total: subscriptions.length,
-          active: subscriptions.filter((s) => s.status === "ACTIVE").length,
-          trial: subscriptions.filter((s) => s.status === "TRIAL").length,
+          active: subscriptions.filter((s) => s.status === "active").length,
+          trial: subscriptions.filter((s) => s.status === "trial").length,
         },
         providers: 0,
         connectors: 0,

@@ -481,12 +481,11 @@ export interface TelephonyProviderSummaryDto {
 export interface PlanRow {
   id: string;
   name: string;
+  /** Legacy derived classification for older workspace screens; not persisted or editable plan data. */
   planType: PlanType;
+  status: PlanStatus;
   features: Feature[];
   limits: OrganizationLimits;
-  priceCents: number;
-  interval: string;
-  isActive: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -501,6 +500,18 @@ export interface SubscriptionRow {
   currentPeriodStart: string | null;
   currentPeriodEnd: string | null;
   cancelledAt: string | null;
+  startedAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Per-tenant feature override. Plan features are the baseline; this row is the explicit grant/revoke. */
+export interface OrganizationEntitlementRow {
+  id: string;
+  organizationId: string;
+  feature: Feature;
+  enabled: boolean;
+  reason: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -523,6 +534,9 @@ export type AuditAction =
   | "ORGANIZATION_UPDATED"
   | "SUBSCRIPTION_CREATED"
   | "SUBSCRIPTION_CHANGED"
+  | "PLAN_CREATED"
+  | "PLAN_CHANGED"
+  | "ENTITLEMENT_CHANGED"
   | "FEATURE_ENABLED"
   | "FEATURE_DISABLED"
   | "LIMIT_CHANGED"
@@ -1016,6 +1030,10 @@ export type Feature = (typeof FEATURES)[number];
 export const PLAN_TYPES = ["starter", "professional", "enterprise", "custom"] as const;
 export type PlanType = (typeof PLAN_TYPES)[number];
 
+/** Plan publication lifecycle. Archived plans remain valid for existing subscriptions. */
+export const PLAN_STATUSES = ["draft", "active", "archived"] as const;
+export type PlanStatus = (typeof PLAN_STATUSES)[number];
+
 /** Subscription status — Phase 10A */
 export const SUBSCRIPTION_STATUSES = ["active", "trial", "suspended", "cancelled", "past_due"] as const;
 export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
@@ -1039,13 +1057,34 @@ export interface PlanEntitlements {
 export interface SubscriptionDto {
   id: string;
   organizationId: string;
+  planId: string;
+  planName: string;
   planType: PlanType;
   status: SubscriptionStatus;
   entitlements: PlanEntitlements;
   effectiveLimits: OrganizationLimits;
   trialEndsAt: string | null;
+  startedAt: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface TenantCommercialSummaryDto {
+  subscription: SubscriptionDto | null;
+  capabilities: Array<{
+    feature: Feature;
+    enabled: boolean;
+    source: "plan" | "override" | "unavailable";
+  }>;
+  limits: OrganizationLimits;
+  usage: {
+    users: number;
+    agents: number;
+    monthlyMinutes: number;
+    campaigns: number;
+    connectors: number;
+  };
+  billing: { status: "not_configured"; provider: null };
 }
 
 /** Workspace bootstrap response — Phase 10A */
@@ -1064,7 +1103,7 @@ export interface WorkspaceBootstrapDto {
     status: OrgStatus;
     branding: OrganizationBrandingDto;
   };
-  subscription: SubscriptionDto;
+  subscription: SubscriptionDto | null;
   entitlements: Feature[];
   permissions: string[];
   limits: OrganizationLimits;

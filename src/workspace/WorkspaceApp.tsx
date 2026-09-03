@@ -15,6 +15,7 @@ import { CampaignsList } from "./pages/CampaignsList";
 import { CampaignDetail } from "./pages/CampaignDetail";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
 import { AgentPerformance } from "./pages/AgentPerformance";
+import { WorkspacePlan } from "./pages/WorkspacePlan";
 
 export function WorkspaceApp() {
   return (
@@ -29,6 +30,7 @@ export function WorkspaceApp() {
         <Route path="campaigns" element={<CampaignsList />} />
         <Route path="campaigns/:campaignId" element={<CampaignDetail />} />
         <Route path="analytics" element={<AnalyticsPage />} />
+        <Route path="plan" element={<WorkspacePlan />} />
         <Route path="*" element={<Navigate to="/workspace/overview" replace />} />
       </Route>
     </Routes>

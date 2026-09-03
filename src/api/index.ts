@@ -27,6 +27,7 @@ import {
   type RealtimeEndRequest,
   type RealtimeSessionDto,
   type RequestContext,
+  type TenantCommercialSummaryDto,
   type UsageSummaryDto,
   type VoiceSessionDto,
   type VoiceTurnDto,
@@ -93,6 +94,7 @@ export interface ApiClient {
   endRealtimeSession(input: RealtimeEndRequest): Promise<ApiResult<{ sessionId: string }>>;
   usage(sessionId?: string | null, signal?: AbortSignal): Promise<ApiResult<UsageSummaryDto>>;
   analytics(signal?: AbortSignal): Promise<ApiResult<AnalyticsSummaryDto>>;
+  tenantCommercialSummary(signal?: AbortSignal): Promise<ApiResult<TenantCommercialSummaryDto>>;
   sessions(signal?: AbortSignal): Promise<ApiResult<unknown[]>>;
   agent(id: string, signal?: AbortSignal): Promise<ApiResult<AgentDto>>;
   createAgent(input: Record<string, unknown>, signal?: AbortSignal): Promise<ApiResult<AgentDto>>;
@@ -341,6 +343,8 @@ export function createApiClient(): ApiClient {
         signal
       ),
     analytics: (signal) => run<AnalyticsSummaryDto>("GET", "/api/analytics", undefined, signal),
+    tenantCommercialSummary: (signal) =>
+      run<TenantCommercialSummaryDto>("GET", "/api/tenant/subscription", undefined, signal),
     sessions: (signal) => run<unknown[]>("GET", "/api/voice/sessions", undefined, signal),
     agent: (id, signal) => run<AgentDto>("GET", `/api/agents/${encodeURIComponent(id)}`, undefined, signal),
     createAgent: (input, signal) => run<AgentDto>("POST", "/api/agents", input, signal),

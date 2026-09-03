@@ -47,10 +47,12 @@ export function createWorkspaceBootstrapService(
       const subscriptionData = await entitlements.getSubscription(organizationId);
 
       // Build subscription DTO
-      const subscription: SubscriptionDto = subscriptionData
+      const subscription: SubscriptionDto | null = subscriptionData
         ? {
             id: subscriptionData.id,
             organizationId: subscriptionData.organizationId,
+            planId: subscriptionData.plan.id,
+            planName: subscriptionData.plan.name,
             planType: subscriptionData.plan.planType,
             status: subscriptionData.status,
             entitlements: {
@@ -59,29 +61,11 @@ export function createWorkspaceBootstrapService(
             },
             effectiveLimits: await entitlements.getEffectiveLimits(organizationId),
             trialEndsAt: subscriptionData.trialEndsAt,
+            startedAt: subscriptionData.startedAt,
             createdAt: subscriptionData.createdAt,
             updatedAt: subscriptionData.updatedAt,
           }
-        : {
-            id: "none",
-            organizationId,
-            planType: "starter",
-            status: "trial",
-            entitlements: {
-              features: ["ai_agents", "voice_calls", "analytics"],
-              limits: {
-                maxUsers: 5,
-                maxAgents: 3,
-                maxMonthlyMinutes: 1000,
-                maxCampaigns: 0,
-                maxConnectors: 1,
-              },
-            },
-            effectiveLimits: await entitlements.getEffectiveLimits(organizationId),
-            trialEndsAt: null,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          };
+        : null;
 
       // Get enabled features
       const enabledFeatures: Feature[] = await entitlements.getEnabledFeatures(organizationId);

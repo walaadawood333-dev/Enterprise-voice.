@@ -1,5 +1,5 @@
 import { Outlet, NavLink } from "react-router-dom";
-import { LayoutDashboard, Bot, PhoneCall, BarChart3, Activity, Users } from "lucide-react";
+import { LayoutDashboard, Bot, PhoneCall, BarChart3, Activity, Users, BadgeCheck } from "lucide-react";
 import { cn } from "@/utils/cn";
 
 const NAV = [
@@ -10,6 +10,7 @@ const NAV = [
   { to: "/workspace/agents/performance", icon: BarChart3, label: "Performance" },
   { to: "/workspace/campaigns", icon: Users, label: "Campaigns" },
   { to: "/workspace/analytics", icon: BarChart3, label: "Analytics" },
+  { to: "/workspace/plan", icon: BadgeCheck, label: "Plan & Capabilities" },
 ];
 
 export function WorkspaceLayout() {

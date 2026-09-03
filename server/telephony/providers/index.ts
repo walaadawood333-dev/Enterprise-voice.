@@ -12,8 +12,8 @@ export {
   type ProviderHealthCheckResult,
 } from "./base/ProductionTelephonyProviderBase";
 
-// SignalWire provider
-export { SignalWireProvider, type SignalWireConfig } from "./signalwire";
+// Concrete production providers are imported by server adapters directly. Keeping them out of
+// this universal barrel prevents Node-only credential/crypto code from entering browser bundles.
 
 // Event normalization
 export {

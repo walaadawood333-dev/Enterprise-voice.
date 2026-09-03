@@ -5,22 +5,22 @@
  * Distinct visual identity from the customer workspace.
  */
 
-import { Outlet, NavLink, useLocation } from "react-router-dom";
-import { LayoutDashboard, Building2, CreditCard, Shield, Settings, Server } from "lucide-react";
+import { Outlet, NavLink } from "react-router-dom";
+import { LayoutDashboard, Building2, CreditCard, Shield, Settings, Server, BadgeCheck, ScrollText } from "lucide-react";
 import { cn } from "@/utils/cn";
 
 const NAV_ITEMS = [
   { to: "/admin/overview", icon: LayoutDashboard, label: "Overview" },
   { to: "/admin/organizations", icon: Building2, label: "Organizations" },
   { to: "/admin/plans", icon: CreditCard, label: "Plans" },
+  { to: "/admin/subscriptions", icon: ScrollText, label: "Subscriptions" },
+  { to: "/admin/entitlements", icon: BadgeCheck, label: "Entitlements" },
   { to: "/admin/providers", icon: Server, label: "Providers" },
   { to: "/admin/audit", icon: Shield, label: "Audit Log" },
   { to: "/admin/settings", icon: Settings, label: "Settings" },
 ];
 
 export function AdminLayout() {
-  const location = useLocation();
-
   return (
     <div className="flex h-screen bg-[#0a0a0a] text-white">
       {/* Sidebar */}
