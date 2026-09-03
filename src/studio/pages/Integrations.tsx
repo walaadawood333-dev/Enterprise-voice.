@@ -1,283 +1,327 @@
-import { useMemo } from "react";
-import { Link } from "react-router-dom";
-import { ArrowUpRight, Banknote, Cable, KeyRound, Landmark, Phone, ShieldCheck } from "lucide-react";
-import { DemoBadge, Panel, PanelHeader, StatusChip } from "../components/primitives";
-import { useStudio } from "../StudioProvider";
-import { cn } from "@/utils/cn";
+import { useEffect, useMemo, useState } from "react";
+import {
+  Cable,
+  CheckCircle2,
+  KeyRound,
+  Loader2,
+  Play,
+  Plus,
+  Power,
+  RefreshCw,
+  ShieldCheck,
+  X,
+} from "lucide-react";
+import type {
+  ConnectorControlDto,
+  ConnectorProviderControlDto,
+  ConnectorTestResult,
+  ControlCenterStatus,
+  TenantConnectorControlCenterDto,
+} from "../../../shared/contracts";
+import { api } from "@/api";
+import { Panel, PanelHeader } from "../components/primitives";
 
-/**
- * Telephony provider status panel — reads real server state, never fabricated.
- * Shows the demo provider in demo mode, or the configured production provider.
- */
-function TelephonyProviderPanel() {
-  const { origin } = useStudio();
+const statusTone: Record<ControlCenterStatus, string> = {
+  CONNECTED: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  NOT_CONFIGURED: "border-amber-200 bg-amber-50 text-amber-700",
+  DEGRADED: "border-orange-200 bg-orange-50 text-orange-700",
+  UNAVAILABLE: "border-red-200 bg-red-50 text-red-700",
+  UNKNOWN: "border-black/10 bg-black/[0.035] text-black/50",
+};
 
-  // Telephony provider status is derived from the server's /api/telephony/registry endpoint.
-  // In this phase, the demo provider is always registered and active in demo mode.
-  const isLive = origin === "live";
+function Status({ value }: { value: ControlCenterStatus }) {
+  return (
+    <span className={`rounded-full border px-2.5 py-1 font-display text-[10px] font-bold tracking-wide ${statusTone[value]}`}>
+      {value.replace("_", " ")}
+    </span>
+  );
+}
+
+export function IntegrationsPage() {
+  const [data, setData] = useState<TenantConnectorControlCenterDto | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [newName, setNewName] = useState("");
+  const [newProvider, setNewProvider] = useState("");
+  const [credentialConnector, setCredentialConnector] = useState<ConnectorControlDto | null>(null);
+  const [credentialValues, setCredentialValues] = useState<Record<string, string>>({});
+  const [lastTest, setLastTest] = useState<{ connectorId: string; result: ConnectorTestResult } | null>(null);
+
+  const load = async () => {
+    setError(null);
+    const result = await api.connectorControlCenter();
+    if (!result.ok) return setError(result.error.message);
+    setData(result.data);
+    setNewProvider((current) => current || result.data.providers[0]?.id || "");
+  };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const providerById = useMemo(
+    () => new Map(data?.providers.map((provider) => [provider.id, provider]) ?? []),
+    [data]
+  );
+
+  const create = async () => {
+    if (!newName.trim() || !newProvider) return;
+    setBusy("create");
+    setError(null);
+    const result = await api.createConnector({ name: newName.trim(), provider: newProvider });
+    if (!result.ok) setError(result.error.message);
+    else {
+      setNewName("");
+      await load();
+    }
+    setBusy(null);
+  };
+
+  const updateEnabled = async (connector: ConnectorControlDto) => {
+    setBusy(connector.id);
+    setError(null);
+    const result = await api.updateConnector(connector.id, { enabled: !connector.enabled });
+    if (!result.ok) setError(result.error.message);
+    await load();
+    setBusy(null);
+  };
+
+  const test = async (connector: ConnectorControlDto) => {
+    setBusy(`test:${connector.id}`);
+    setError(null);
+    const result = await api.testConnector(connector.id);
+    if (!result.ok) setError(result.error.message);
+    else setLastTest({ connectorId: connector.id, result: result.data });
+    await load();
+    setBusy(null);
+  };
+
+  const saveCredentials = async () => {
+    if (!credentialConnector) return;
+    setBusy(`credentials:${credentialConnector.id}`);
+    setError(null);
+    const result = await api.configureConnectorCredentials(credentialConnector.id, credentialValues);
+    // Secret-bearing input is cleared immediately after the request and is never rehydrated.
+    setCredentialValues({});
+    if (!result.ok) setError(result.error.message);
+    else setCredentialConnector(null);
+    await load();
+    setBusy(null);
+  };
+
+  const openCredentials = (connector: ConnectorControlDto) => {
+    setCredentialValues({});
+    setCredentialConnector(connector);
+  };
 
   return (
-    <div className="rounded-2xl border border-hair overflow-hidden">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2.5 bg-white px-4 py-3.5">
-        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-black/[0.05] text-black/55">
-          <Phone size={15} />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block font-display text-[14.5px] font-bold tracking-tight">
-            Demo Telephony Provider
-          </span>
-          <span className="block text-[12px] leading-snug text-black/45">
-            In-process call simulator — simulation: true, no real PSTN.
-          </span>
-        </span>
-        <StatusChip
-          status={isLive ? "configured" : "coming_soon"}
-          label={isLive ? "Demo Active" : "Simulation Only"}
+    <div className="space-y-5">
+      <Panel as="section" className="space-y-4">
+        <PanelHeader
+          eyebrow="Tenant connector control center"
+          title="Providers registered by the backend"
+          aside={
+            <button type="button" onClick={() => void load()} className="inline-flex items-center gap-1.5 text-xs text-black/45 hover:text-black">
+              <RefreshCw size={13} /> Refresh
+            </button>
+          }
         />
-        <span className="shrink-0 rounded-full border border-hair bg-mist px-3.5 py-1.5 font-display text-[11.5px] font-semibold text-black/50">
-          Demo mode
-        </span>
-      </div>
-      <div className="border-t border-hair bg-mist/40 px-4 py-3">
-        <div className="flex flex-wrap gap-x-5 gap-y-1.5 text-[11.5px] text-black/45">
-          <span>Capabilities: inbound, outbound</span>
-          <span>Transport: simulation</span>
-          <span>Health: healthy</span>
-          <span>Webhooks: n/a (simulation)</span>
-        </div>
-        <p className="mt-2 text-[11px] leading-relaxed text-black/35">
-          Production PSTN/SIP providers are not connected yet. When one is configured, it will appear here
-          with its real health status and capabilities.
+        <p className="max-w-3xl text-[13px] leading-relaxed text-black/50">
+          This catalog is generated from the live connector registry. Platform telephony providers are managed
+          separately by platform administrators and are never configured from a tenant workspace.
         </p>
-      </div>
+        {error ? <p className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p> : null}
+        {!data ? (
+          <div className="flex items-center gap-2 py-8 text-sm text-black/45"><Loader2 size={15} className="animate-spin" /> Loading registry…</div>
+        ) : data.providers.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-black/15 p-6 text-sm text-black/45">No connector adapters are registered.</div>
+        ) : (
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {data.providers.map((provider) => (
+              <ProviderCard key={provider.id} provider={provider} />
+            ))}
+          </div>
+        )}
+      </Panel>
 
-      {/* Provider Certification Framework Status */}
-      <div className="border-t border-hair bg-white px-4 py-3">
-        <p className="font-display text-[11px] font-bold tracking-[0.16em] text-black/40 uppercase mb-2">
-          Provider Certification Framework
-        </p>
-        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11.5px] text-black/50">
-          <span>Status: <strong className="text-black/70">Framework Ready</strong></span>
-          <span>Certification: <strong className="text-black/70">Awaiting First Provider</strong></span>
-          <span>Activation Gate: <strong className="text-black/70">Not Required (Demo)</strong></span>
-          <span>Environment: <strong className="text-black/70">Demo (Simulation)</strong></span>
-        </div>
-        <div className="mt-3">
-          <p className="font-display text-[10px] font-bold tracking-[0.14em] text-black/35 uppercase mb-1.5">
-            Certification Categories
-          </p>
-          <div className="flex flex-wrap gap-1.5">
-            {[
-              "Configuration", "Capabilities", "Health", "Security",
-              "Lifecycle", "Idempotency", "Tenant Isolation", "Media",
-              "Error Handling", "Observability",
-            ].map((cat) => (
-              <span key={cat} className="rounded-full border border-dashed border-black/15 bg-mist/40 px-2 py-0.5 text-[10px] text-black/40">
-                {cat}
-              </span>
-            ))}
+      {data ? (
+        <Panel as="section" className="space-y-4">
+          <PanelHeader eyebrow="Connections" title="Tenant-owned connectors" />
+          <div className="grid gap-2 sm:grid-cols-[1fr_220px_auto]">
+            <input
+              value={newName}
+              onChange={(event) => setNewName(event.target.value)}
+              placeholder="Connection name"
+              maxLength={80}
+              className="rounded-xl border border-hair bg-white px-3.5 py-2.5 text-sm outline-none focus:border-black/30"
+            />
+            <select
+              value={newProvider}
+              onChange={(event) => setNewProvider(event.target.value)}
+              className="rounded-xl border border-hair bg-white px-3.5 py-2.5 text-sm outline-none"
+            >
+              {data.providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+            </select>
+            <button
+              type="button"
+              disabled={!newName.trim() || !newProvider || busy === "create"}
+              onClick={() => void create()}
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-black px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-35"
+            >
+              {busy === "create" ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Add
+            </button>
           </div>
-        </div>
-        <div className="mt-3">
-          <p className="font-display text-[10px] font-bold tracking-[0.14em] text-black/35 uppercase mb-1.5">
-            Onboarding Workflow
-          </p>
-          <div className="flex flex-wrap gap-1">
-            {["Registered", "Configured", "Sandbox Ready", "Certification", "Certified", "Production Ready", "Active"].map((stage) => (
-              <span key={stage} className="flex items-center gap-1 text-[10px] text-black/35">
-                <span className="inline-block h-1.5 w-1.5 rounded-full bg-black/15" />
-                {stage}
-              </span>
-            ))}
-          </div>
-        </div>
-        <p className="mt-2 text-[10.5px] leading-relaxed text-black/35">
-          Certification harness is ready. No real provider is connected. First provider must pass all 10 categories before production activation.
-        </p>
-      </div>
+
+          {data.credentialStorage === "SESSION_ONLY" ? (
+            <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-800">
+              Demo mode uses session-only server memory for credentials. Values disappear when this runtime restarts.
+            </p>
+          ) : data.credentialStorage === "UNAVAILABLE" ? (
+            <p className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs leading-relaxed text-red-700">
+              Credential provisioning is unavailable until an encrypted production credential store is connected.
+            </p>
+          ) : (
+            <p className="inline-flex items-center gap-2 text-xs text-emerald-700"><ShieldCheck size={14} /> Encrypted external credential storage is available.</p>
+          )}
+
+          {data.connectors.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-black/15 p-8 text-center text-sm text-black/45">
+              No tenant connectors are configured yet.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {data.connectors.map((connector) => {
+                const provider = providerById.get(connector.provider);
+                const result = lastTest?.connectorId === connector.id ? lastTest.result : null;
+                return (
+                  <article key={connector.id} className="rounded-2xl border border-hair bg-white p-4">
+                    <div className="flex flex-wrap items-start gap-3">
+                      <span className="grid h-10 w-10 place-items-center rounded-xl bg-black/[0.045] text-black/55"><Cable size={17} /></span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="font-display text-[15px] font-bold">{connector.name}</h3>
+                          <Status value={connector.status} />
+                        </div>
+                        <p className="mt-1 text-xs text-black/45">
+                          {connector.providerName} · {connector.type.replace(/_/g, " ")} · credentials {connector.hasCredentials ? "configured" : "not configured"}
+                        </p>
+                        {result ? (
+                          <p className={`mt-2 text-xs ${result.success ? "text-emerald-700" : "text-red-700"}`}>
+                            {result.message} · {result.latencyMs} ms
+                          </p>
+                        ) : null}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          disabled={data.credentialStorage === "UNAVAILABLE"}
+                          onClick={() => openCredentials(connector)}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-hair px-3 py-2 text-xs font-semibold text-black/60 disabled:opacity-35"
+                        ><KeyRound size={13} /> {connector.hasCredentials ? "Replace credentials" : "Configure"}</button>
+                        <button
+                          type="button"
+                          disabled={!provider?.capabilities.connectionTesting || busy === `test:${connector.id}`}
+                          onClick={() => void test(connector)}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-hair px-3 py-2 text-xs font-semibold text-black/60 disabled:opacity-35"
+                        >{busy === `test:${connector.id}` ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />} Test</button>
+                        <button
+                          type="button"
+                          disabled={busy === connector.id}
+                          onClick={() => void updateEnabled(connector)}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-black px-3 py-2 text-xs font-semibold text-white disabled:opacity-35"
+                        >{busy === connector.id ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />} {connector.enabled ? "Disable" : "Enable"}</button>
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </Panel>
+      ) : null}
+
+      {credentialConnector && data ? (
+        <CredentialDialog
+          connector={credentialConnector}
+          provider={providerById.get(credentialConnector.provider)}
+          values={credentialValues}
+          onChange={(key, value) => setCredentialValues((current) => ({ ...current, [key]: value }))}
+          onClose={() => { setCredentialValues({}); setCredentialConnector(null); }}
+          onSave={() => void saveCredentials()}
+          busy={busy === `credentials:${credentialConnector.id}`}
+        />
+      ) : null}
     </div>
   );
 }
 
-const CATEGORIES = [
-  { key: "Telephony", label: "Telephony", icon: Cable, hint: "Numbers, trunks and call routing" },
-  { key: "CRM", label: "CRM", icon: Landmark, hint: "Case, contact and activity write-back" },
-  { key: "Payments", label: "Payments", icon: Banknote, hint: "Host and gateway interactions" },
-  { key: "Jordan Fintech", label: "Jordan Fintech", icon: ShieldCheck, hint: "Local rails under discussion" },
-] as const;
-
-export function IntegrationsPage() {
-  const { integrations, requested, requestIntegration, origin } = useStudio();
-
-  const grouped = useMemo(
-    () =>
-      CATEGORIES.map((category) => ({
-        ...category,
-        rows: integrations.filter((item) => item.category === category.key),
-      })),
-    [integrations]
-  );
-
-  const connected = integrations.filter((item) => item.status === "configured").length;
-
+function ProviderCard({ provider }: { provider: ConnectorProviderControlDto }) {
+  const capabilities = Object.entries(provider.capabilities).filter(([, enabled]) => enabled).map(([name]) => name);
   return (
-    <div className="space-y-4 sm:space-y-5">
-      <Panel dark as="section" className="flex flex-wrap items-start justify-between gap-5">
-        <div className="max-w-2xl">
-          <div className="flex items-center gap-2.5">
-            <Cable size={15} className="text-white/50" />
-            <p className="font-display text-[10px] font-bold tracking-[0.2em] text-white/45 uppercase">
-              Integration status
-            </p>
-          </div>
-          <h2 className="mt-3.5 text-[1.7rem] leading-tight font-medium sm:text-[2rem]">
-            {connected === 0 ? "Nothing is connected yet — by design" : `${connected} connected`}
-          </h2>
-          <p className="mt-3 text-[13.5px] leading-relaxed text-white/55">
-            This page reports real connection state only. A row never shows as active because it was
-            requested, and no credential is entered, stored or echoed anywhere in the browser.
-          </p>
+    <article className="rounded-2xl border border-hair bg-white p-4">
+      <div className="flex items-start justify-between gap-3">
+        <span className="grid h-10 w-10 place-items-center rounded-xl bg-black/[0.045] text-black/55"><Cable size={17} /></span>
+        <Status value={provider.status} />
+      </div>
+      <h3 className="mt-3 font-display text-[15px] font-bold">{provider.name}</h3>
+      <p className="mt-1 min-h-10 text-xs leading-relaxed text-black/45">{provider.description}</p>
+      <p className="mt-3 text-[10px] font-semibold uppercase tracking-wider text-black/35">Registered adapter · v{provider.version}</p>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {capabilities.map((capability) => <span key={capability} className="rounded-full bg-black/[0.04] px-2 py-1 text-[10px] text-black/50">{capability}</span>)}
+      </div>
+    </article>
+  );
+}
+
+function CredentialDialog({
+  connector,
+  provider,
+  values,
+  onChange,
+  onClose,
+  onSave,
+  busy,
+}: {
+  connector: ConnectorControlDto;
+  provider?: ConnectorProviderControlDto;
+  values: Record<string, string>;
+  onChange: (key: string, value: string) => void;
+  onClose: () => void;
+  onSave: () => void;
+  busy: boolean;
+}) {
+  const valid = provider?.credentialFields.every((field) => !field.required || Boolean(values[field.key]?.trim())) ?? false;
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" role="dialog" aria-modal="true" aria-label="Configure connector credentials">
+      <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl">
+        <div className="flex items-start justify-between gap-4">
+          <div><p className="text-[10px] font-bold uppercase tracking-widest text-black/35">Server-only credentials</p><h2 className="mt-1 font-display text-xl font-bold">{connector.name}</h2></div>
+          <button type="button" onClick={onClose} aria-label="Close" className="rounded-full p-2 text-black/40 hover:bg-black/5"><X size={16} /></button>
         </div>
-        <div className="rounded-2xl border border-white/12 bg-white/[0.04] px-4 py-3.5 text-[12px] text-white/55">
-          <p className="font-display text-[10px] font-bold tracking-[0.16em] text-white/40 uppercase">
-            Workspace
-          </p>
-          <p className="mt-1.5 text-[15px] font-semibold text-white/80">
-            {integrations.length} integration slots
-          </p>
-          <p className="mt-1 text-[11px]">{requested.length} requested locally in this session</p>
+        <p className="mt-3 text-xs leading-relaxed text-black/50">
+          Existing values are never returned. Saving replaces the credential set, and fields are cleared from this form immediately after submission.
+        </p>
+        <div className="mt-4 space-y-3">
+          {provider?.credentialFields.map((field) => (
+            <label key={field.key} className="block text-xs font-semibold text-black/60">
+              {field.label}{field.required ? " *" : ""}
+              <input
+                type={field.input === "secret" ? "password" : field.input}
+                autoComplete="off"
+                value={values[field.key] ?? ""}
+                onChange={(event) => onChange(field.key, event.target.value)}
+                className="mt-1.5 block w-full rounded-xl border border-hair px-3.5 py-2.5 text-sm font-normal outline-none focus:border-black/30"
+              />
+              {field.description ? <span className="mt-1 block text-[10px] font-normal text-black/35">{field.description}</span> : null}
+            </label>
+          ))}
         </div>
-      </Panel>
-
-      {grouped.map((group) => (
-        <Panel key={group.key} as="section" className="space-y-4">
-          <PanelHeader
-            eyebrow={group.hint}
-            title={group.label}
-            aside={<DemoBadge live={origin === "live"} note="Connector state comes from the server; nothing here is inferred." />}
-          />
-          <ul className="divide-y divide-hair overflow-hidden rounded-2xl border border-hair">
-            {group.rows.map((item) => {
-              const isRequested = requested.includes(item.id);
-              return (
-                <li
-                  key={item.id}
-                  className="flex flex-wrap items-center gap-x-4 gap-y-2.5 bg-white px-4 py-3.5 transition-colors duration-300 hover:bg-mist/60"
-                >
-                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-black/[0.05] text-black/55">
-                    <group.icon size={15} />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block font-display text-[14.5px] font-bold tracking-tight">
-                      {item.name}
-                    </span>
-                    <span className="block text-[12px] leading-snug text-black/45">{item.note}</span>
-                  </span>
-                  <StatusChip
-                    status={isRequested && item.status === "not_connected" ? "coming_soon" : item.status}
-                    label={
-                      isRequested && item.status === "not_connected"
-                        ? "Requested"
-                        : item.status === "not_connected"
-                          ? "Not connected"
-                          : item.status === "coming_soon"
-                            ? "Coming soon"
-                            : "Configured"
-                    }
-                  />
-                  <button
-                    type="button"
-                    onClick={() => requestIntegration(item.id)}
-                    disabled={item.status === "configured"}
-                    className={cn(
-                      "shrink-0 rounded-full border px-3.5 py-1.5 font-display text-[11.5px] font-semibold transition-colors",
-                      item.status === "configured"
-                        ? "cursor-not-allowed border-hair text-black/30"
-                        : "cursor-pointer border-hair bg-white text-black/60 hover:border-black/25 hover:bg-mist hover:text-black"
-                    )}
-                  >
-                    {item.status === "configured" ? "Active" : "Request access"}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </Panel>
-      ))}
-
-      <Panel as="section" className="space-y-4">
-        <PanelHeader
-          eyebrow="Telephony provider status"
-          title="Provider registry"
-          aside={<DemoBadge live={origin === "live"} note="Telephony provider state comes from the server." />}
-        />
-        <TelephonyProviderPanel />
-      </Panel>
-
-      <div className="grid gap-4 lg:grid-cols-2 lg:gap-5">
-        <Panel as="article" className="space-y-3.5">
-          <PanelHeader eyebrow="Credential handling" title="Where a key goes — and where it never goes" />
-          <div className="rounded-2xl border border-hair bg-mist/60 p-4">
-            <p className="mb-2 flex items-center gap-2 font-display text-[10px] font-bold tracking-[0.16em] text-black/45 uppercase">
-              <KeyRound size={12} />
-              Server environment only
-            </p>
-            <pre className="overflow-x-auto font-mono text-[11.5px] leading-relaxed text-black/65">
-{`# .env (never committed, never bundled)
-OPENAI_API_KEY=…          # realtime voice
-DATABASE_URL=…            # repositories
-JWT_SECRET=…              # tokens, server-side
-STORAGE_BUCKET_NAME=…     # transcript objects
-CRM_API_KEY=…             # write-back (not implemented)`}
-            </pre>
-          </div>
-          <ul className="space-y-2 text-[12.5px] leading-relaxed text-black/55">
-            {[
-              "The browser receives a short-lived session credential, never a provider key.",
-              "There is no key field on this page on purpose — pasting a secret into a client is how they leak.",
-              "Requests made here stay in this browser session; nothing is written to a connector.",
-            ].map((line) => (
-              <li key={line} className="flex items-start gap-2.5">
-                <span className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-black" />
-                {line}
-              </li>
-            ))}
-          </ul>
-        </Panel>
-
-        <Panel as="article" className="flex flex-col justify-between gap-5">
-          <div className="space-y-3.5">
-            <PanelHeader eyebrow="Jordan fintech" title="Rails we intend to speak to" />
-            <p className="text-[13px] leading-relaxed text-black/55">
-              ZainCash, Orange Money, UWallet and CliQ are named as engineering targets for wallet and
-              instant-payment flows. They are not certified integrations, not marketplace listings, and no
-              transaction can be initiated from this workspace.
-            </p>
-            <ul className="flex flex-wrap gap-2">
-              {["ZainCash", "Orange Money", "UWallet", "CliQ"].map((rail) => (
-                <li
-                  key={rail}
-                  className="rounded-full border border-dashed border-black/20 bg-white px-3.5 py-1.5 font-display text-[12px] font-semibold text-black/55"
-                >
-                  {rail}
-                  <span className="ms-2 text-[10px] tracking-[0.14em] text-black/35 uppercase">
-                    not connected
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-          <Link
-            to="/studio/settings"
-            className="group inline-flex items-center gap-1.5 self-start rounded-full border border-hair bg-white px-4 py-2 font-display text-[13px] font-semibold text-black/65 transition-colors hover:border-black/25 hover:text-black"
-          >
-            Configure the environment
-            <ArrowUpRight
-              size={13}
-              className="transition-transform duration-300 group-hover:-translate-y-0.5 group-hover:translate-x-0.5"
-            />
-          </Link>
-        </Panel>
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-xl border border-hair px-4 py-2.5 text-sm font-semibold">Cancel</button>
+          <button type="button" disabled={!valid || busy} onClick={onSave} className="inline-flex items-center gap-2 rounded-xl bg-black px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-35">
+            {busy ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />} Save securely
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -553,7 +553,9 @@ export function createMemoryDb(): Db {
       name: "Starter",
       planType: "starter",
       status: "active",
-      features: ["ai_agents", "voice_calls", "analytics"],
+      // The browser demo exposes the real connector control center with the single registered
+      // adapter. Production Starter packaging remains unchanged in DEFAULT_PLANS.
+      features: ["ai_agents", "voice_calls", "analytics", "data_connectors"],
       limits: { maxUsers: 5, maxAgents: 3, maxMonthlyMinutes: 1000, maxCampaigns: 0, maxConnectors: 1 },
       createdAt: stamp,
       updatedAt: stamp,

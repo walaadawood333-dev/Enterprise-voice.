@@ -28,21 +28,30 @@ import type {
   ConnectorSchema,
   SyncMode,
   SyncDirection,
-  SyncJobStatus,
   DataTransformerType,
   ConnectorActivityType,
+  ConnectorControlDto,
+  ConnectorProviderControlDto,
+  ControlCenterStatus,
+  AuditAction,
 } from "../../shared/contracts";
 import type { Db } from "../db/store";
 import type { ConnectorProviderRegistry } from "../connectors/providers/registry";
-import type { ConnectorCredentialStore } from "../connectors/credentials";
+import {
+  containsCredentialMaterial,
+  scrubCredentials,
+  type ConnectorCredentialStore,
+} from "../connectors/credentials";
 import type { ConnectorSyncEngine } from "../connectors/syncEngine";
 import type { Logger } from "../lib/observability";
+import type { AuditService } from "./audit";
 
 export interface ConnectorService {
   // Connector CRUD
   createConnector(
     organizationId: string,
-    input: CreateConnectorInput
+    input: CreateConnectorInput,
+    actor?: ConnectorActor
   ): Promise<DataConnectorDto>;
   
   getConnector(
@@ -58,25 +67,29 @@ export interface ConnectorService {
   updateConnector(
     organizationId: string,
     connectorId: string,
-    patch: UpdateConnectorInput
+    patch: UpdateConnectorInput,
+    actor?: ConnectorActor
   ): Promise<DataConnectorDto | undefined>;
   
   deleteConnector(
     organizationId: string,
-    connectorId: string
+    connectorId: string,
+    actor?: ConnectorActor
   ): Promise<boolean>;
 
   // Connection testing
   testConnection(
     organizationId: string,
-    connectorId: string
+    connectorId: string,
+    actor?: ConnectorActor
   ): Promise<ConnectorTestResult>;
 
   // Credential management (Phase 14)
   storeCredentials(
     organizationId: string,
     connectorId: string,
-    credentials: Record<string, any>
+    credentials: Record<string, any>,
+    actor?: ConnectorActor
   ): Promise<void>;
 
   hasCredentials(
@@ -150,6 +163,18 @@ export interface ConnectorService {
     organizationId: string,
     connectorId: string
   ): Promise<ConnectorHealthStatus>;
+
+  /** Safe, normalized control-center views. */
+  getControlConnector(organizationId: string, connectorId: string): Promise<ConnectorControlDto | undefined>;
+  listControlConnectors(organizationId: string): Promise<ConnectorControlDto[]>;
+  listControlProviders(organizationId?: string): Promise<ConnectorProviderControlDto[]>;
+  credentialStorageKind(): "SESSION_ONLY" | "SECURE_EXTERNAL" | "UNAVAILABLE";
+}
+
+export interface ConnectorActor {
+  actorId?: string | null;
+  actorEmail?: string | null;
+  ipAddress?: string | null;
 }
 
 export interface CreateConnectorInput {
@@ -190,13 +215,28 @@ export interface UpdateMappingInput {
   displayOrder?: number;
 }
 
+/** Normalize persisted connector state to the only statuses exposed by the control center. */
+export function connectorControlStatus(
+  row: Pick<DataConnectorRow, "enabled" | "status" | "healthStatus">,
+  hasCredentials: boolean
+): ControlCenterStatus {
+  if (row.status === "DISABLED") return "UNAVAILABLE";
+  if (!hasCredentials) return "NOT_CONFIGURED";
+  if (!row.enabled) return "UNAVAILABLE";
+  if (row.healthStatus === "UNAVAILABLE") return "UNAVAILABLE";
+  if (row.healthStatus === "DEGRADED") return "DEGRADED";
+  if (row.status === "ERROR") return "DEGRADED";
+  if (row.status === "CONNECTED" && row.healthStatus === "HEALTHY") return "CONNECTED";
+  return "UNKNOWN";
+}
+
 /**
  * Create connector service with dependency injection.
  */
 export function createConnectorService(deps: {
   db: Db;
-  audit?: any; // AuditService
-  entitlements?: any; // EntitlementService
+  audit?: AuditService;
+  entitlements?: { hasFeature(organizationId: string, feature: string): Promise<boolean> };
   providerRegistry?: ConnectorProviderRegistry; // Phase 14
   credentialStore?: ConnectorCredentialStore; // Phase 14
   syncEngine?: ConnectorSyncEngine; // Phase 14
@@ -297,27 +337,68 @@ export function createConnectorService(deps: {
     });
   }
 
-  // Helper: Scrub credentials from metadata
-  function scrubMetadata(metadata: Record<string, any>): Record<string, any> {
-    const scrubbed = { ...metadata };
-    const sensitiveKeys = [
-      "apiKey", "api_key", "token", "password", "secret",
-      "credential", "credentials", "auth", "authorization",
-      "connectionString", "connection_string", "databaseUrl",
-    ];
-    
-    for (const key of sensitiveKeys) {
-      if (key in scrubbed) {
-        delete scrubbed[key];
-      }
+  function rejectCredentialConfiguration(configuration: Record<string, unknown> | undefined): void {
+    if (configuration && containsCredentialMaterial(configuration)) {
+      throw new Error("CREDENTIALS_NOT_ALLOWED_IN_CONFIGURATION");
     }
-    
-    return scrubbed;
+  }
+
+  async function recordAudit(
+    organizationId: string,
+    action: AuditAction,
+    metadata: Record<string, unknown>,
+    actor?: ConnectorActor
+  ): Promise<void> {
+    if (!audit) return;
+    const safe = scrubCredentials(metadata) as Record<string, string | number | boolean | null>;
+    await audit.record({
+      organizationId,
+      action,
+      actorId: actor?.actorId,
+      actorEmail: actor?.actorEmail,
+      ipAddress: actor?.ipAddress,
+      metadata: safe,
+    });
+  }
+
+  async function rowToControl(row: DataConnectorRow): Promise<ConnectorControlDto> {
+    const provider = providerRegistry?.hasProvider(row.provider)
+      ? providerRegistry.getProvider(row.provider)
+      : undefined;
+    const [mappingCount, hasCredentials] = await Promise.all([
+      db.connectorMappings.count(row.organizationId, row.id),
+      credentialStore?.exists(row.organizationId, row.id) ?? Promise.resolve(false),
+    ]);
+    return {
+      id: row.id,
+      name: row.name,
+      provider: row.provider,
+      providerName: provider?.info.name ?? row.provider,
+      type: row.type,
+      status: connectorControlStatus(row, hasCredentials),
+      enabled: row.enabled,
+      hasCredentials,
+      connectionTestingSupported: provider?.info.capabilities.connectionTesting === true,
+      syncMode: row.syncMode,
+      mappingCount,
+      lastSyncAt: row.lastSyncAt,
+      lastTestedAt: row.lastTestedAt,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
   }
 
   return {
-    async createConnector(organizationId, input) {
+    async createConnector(organizationId, input, actor) {
       await checkEntitlement(organizationId);
+      rejectCredentialConfiguration(input.configuration);
+      if (providerRegistry) {
+        const registered = providerRegistry.hasProvider(input.provider)
+          ? providerRegistry.getProvider(input.provider)
+          : undefined;
+        if (!registered) throw new Error("CONNECTOR_PROVIDER_NOT_REGISTERED");
+        if (registered.info.type !== input.type) throw new Error("CONNECTOR_PROVIDER_TYPE_MISMATCH");
+      }
 
       const row = await db.connectors.create({
         organizationId,
@@ -330,18 +411,12 @@ export function createConnectorService(deps: {
         configuration: input.configuration ?? {},
       });
 
-      if (audit) {
-        await audit.log({
-          organizationId,
-          action: "CONNECTOR_CREATED",
-          metadata: scrubMetadata({
-            connectorId: row.id,
-            name: row.name,
-            provider: row.provider,
-            type: row.type,
-          }),
-        });
-      }
+      await recordAudit(
+        organizationId,
+        "CONNECTOR_CREATED",
+        { connectorId: row.id, name: row.name, provider: row.provider, type: row.type, lifecycle: "created" },
+        actor
+      );
 
       return toDto(row);
     },
@@ -360,8 +435,11 @@ export function createConnectorService(deps: {
       return Promise.all(rows.map(toDto));
     },
 
-    async updateConnector(organizationId, connectorId, patch) {
+    async updateConnector(organizationId, connectorId, patch, actor) {
       await checkEntitlement(organizationId);
+      rejectCredentialConfiguration(patch.configuration);
+      const before = await db.connectors.get(connectorId, organizationId);
+      if (!before) return undefined;
 
       // Build update object, only including defined fields to avoid overwriting with undefined
       const updateData: any = {};
@@ -370,206 +448,188 @@ export function createConnectorService(deps: {
       if (patch.syncMode !== undefined) updateData.syncMode = patch.syncMode;
       if (patch.scheduleCron !== undefined) updateData.scheduleCron = patch.scheduleCron;
       if (patch.configuration !== undefined) updateData.configuration = patch.configuration;
-      if (patch.enabled !== undefined) updateData.enabled = patch.enabled;
+      if (patch.enabled !== undefined) {
+        updateData.enabled = patch.enabled;
+        if (!patch.enabled) updateData.status = "DISABLED";
+        if (patch.enabled && before.status === "DISABLED") updateData.status = "CONFIGURING";
+      }
 
       const row = await db.connectors.update(connectorId, organizationId, updateData);
-
       if (!row) return undefined;
 
-      if (audit) {
-        await audit.log({
+      const disabled = patch.enabled === false && before.status !== "DISABLED";
+      if (disabled) {
+        await logActivity(organizationId, connectorId, "CONNECTOR_DISABLED", "Connector disabled", "success", {}, actor?.actorId ?? null);
+        await recordAudit(
           organizationId,
-          action: "CONNECTOR_UPDATED",
-          metadata: scrubMetadata({
-            connectorId: row.id,
-            changes: Object.keys(patch),
-          }),
-        });
+          "CONNECTOR_DISABLED",
+          { connectorId: row.id, provider: row.provider, lifecycle: "disabled" },
+          actor
+        );
+      } else {
+        await recordAudit(
+          organizationId,
+          "CONNECTOR_UPDATED",
+          { connectorId: row.id, changes: Object.keys(patch).join(","), lifecycle: "updated" },
+          actor
+        );
       }
 
       return toDto(row);
     },
 
-    async deleteConnector(organizationId, connectorId) {
+    async deleteConnector(organizationId, connectorId, actor) {
       await checkEntitlement(organizationId);
 
       const deleted = await db.connectors.delete(connectorId, organizationId);
-      
-      if (deleted && audit) {
-        await audit.log({
-          organizationId,
-          action: "CONNECTOR_DELETED",
-          metadata: { connectorId },
-        });
-      }
-
+      if (deleted) await recordAudit(organizationId, "CONNECTOR_DELETED", { connectorId }, actor);
       return deleted;
     },
 
-    async testConnection(organizationId, connectorId) {
+    async testConnection(organizationId, connectorId, actor) {
       await checkEntitlement(organizationId);
-
+      const startedAt = Date.now();
       const connector = await db.connectors.get(connectorId, organizationId);
-      if (!connector) {
-        throw new Error("CONNECTOR_NOT_FOUND");
-      }
+      if (!connector) throw new Error("CONNECTOR_NOT_FOUND");
 
-      // Phase 14: Use real provider for connection testing
-      if (providerRegistry && credentialStore) {
-        const provider = providerRegistry.getProvider(connector.provider);
-        if (!provider) {
-          return {
-            success: false,
-            message: "Provider not available",
-            latencyMs: 0,
-            diagnostics: {
-              provider: connector.provider,
-              error: "PROVIDER_NOT_REGISTERED",
-            },
-          };
-        }
-
-        // Retrieve credentials
-        const credentials = await credentialStore.retrieve(organizationId, connectorId);
-        if (!credentials) {
-          return {
-            success: false,
-            message: "Credentials not configured",
-            latencyMs: 0,
-            diagnostics: {
-              provider: connector.provider,
-              error: "CREDENTIALS_NOT_FOUND",
-            },
-          };
-        }
-
-        // Test connection using real provider
-        const result = await provider.testConnection({
-          organizationId,
-          credentials,
-          configuration: connector.configuration,
-        });
-
-        // Update connector status based on test result
-        const newStatus: ConnectorStatus = result.success ? "CONNECTED" : "ERROR";
-        const newHealthStatus: ConnectorHealthStatus = result.success ? "HEALTHY" : "UNAVAILABLE";
-
+      const finish = async (
+        result: ConnectorTestResult,
+        update?: { status?: ConnectorStatus; healthStatus?: ConnectorHealthStatus }
+      ): Promise<ConnectorTestResult> => {
+        const safeResult: ConnectorTestResult = {
+          success: result.success === true,
+          message: result.success ? "Connection test succeeded" : "Connection test failed",
+          latencyMs:
+            typeof result.latencyMs === "number" && Number.isFinite(result.latencyMs)
+              ? Math.max(0, Math.round(result.latencyMs))
+              : Date.now() - startedAt,
+          diagnostics: {
+            provider: connector.provider,
+            ...(!result.success && typeof result.diagnostics?.error === "string" && /^[A-Z0-9_]{2,64}$/.test(result.diagnostics.error)
+              ? { error: result.diagnostics.error }
+              : {}),
+          },
+        };
         await db.connectors.update(connectorId, organizationId, {
-          status: newStatus,
-          healthStatus: newHealthStatus,
+          ...update,
           lastTestedAt: new Date().toISOString(),
-          lastHealthCheckAt: new Date().toISOString(),
+          lastHealthCheckAt: update?.healthStatus ? new Date().toISOString() : connector.lastHealthCheckAt,
         });
-
-        // Log activity
         await logActivity(
           organizationId,
           connectorId,
           "CONNECTION_TESTED",
-          result.message,
-          result.success ? "success" : "failure",
-          { latencyMs: result.latencyMs }
+          safeResult.success ? "Connection test succeeded" : "Connection test failed",
+          safeResult.success ? "success" : "failure",
+          { latencyMs: safeResult.latencyMs },
+          actor?.actorId ?? null
         );
-
-        if (audit) {
-          await audit.log({
-            organizationId,
-            action: "CONNECTOR_TESTED",
-            metadata: {
-              connectorId,
-              success: result.success,
-              message: result.message,
-              latencyMs: result.latencyMs,
-            },
-          });
-        }
-
-        return result;
-      }
-
-      // Fallback: Simulate connection test (Phase 10E behavior)
-      const startTime = Date.now();
-      const result: ConnectorTestResult = {
-        success: connector.status !== "ERROR",
-        message: connector.status === "CONNECTED" 
-          ? "Connection successful"
-          : connector.status === "ERROR"
-          ? "Connection failed"
-          : "Connection test not available - provider not implemented",
-        latencyMs: Date.now() - startTime,
-        diagnostics: {
-          status: connector.status,
-          healthStatus: connector.healthStatus,
-          provider: connector.provider,
-        },
+        await recordAudit(
+          organizationId,
+          "CONNECTOR_TESTED",
+          {
+            connectorId,
+            provider: connector.provider,
+            success: safeResult.success,
+            latencyMs: safeResult.latencyMs,
+            lifecycle: "tested",
+          },
+          actor
+        );
+        return safeResult;
       };
 
-      // Update last tested timestamp
-      await db.connectors.update(connectorId, organizationId, {
-        lastTestedAt: new Date().toISOString(),
-      });
-
-      // Log activity
-      await logActivity(
-        organizationId,
-        connectorId,
-        "CONNECTION_TESTED",
-        result.message,
-        result.success ? "success" : "failure",
-        { latencyMs: result.latencyMs }
-      );
-
-      if (audit) {
-        await audit.log({
-          organizationId,
-          action: "CONNECTOR_TESTED",
-          metadata: scrubMetadata({
-            connectorId,
-            success: result.success,
-            message: result.message,
-          }),
+      const provider = providerRegistry?.hasProvider(connector.provider)
+        ? providerRegistry.getProvider(connector.provider)
+        : undefined;
+      if (!provider || provider.info.capabilities.connectionTesting !== true || !credentialStore) {
+        return finish({
+          success: false,
+          message: "Connection testing unavailable",
+          latencyMs: Date.now() - startedAt,
+          diagnostics: { provider: connector.provider, error: "CONNECTION_TEST_UNAVAILABLE" },
         });
       }
 
-      return result;
+      const credentials = await credentialStore.retrieve(organizationId, connectorId);
+      if (!credentials) {
+        return finish({
+          success: false,
+          message: "Credentials not configured",
+          latencyMs: Date.now() - startedAt,
+          diagnostics: { provider: connector.provider, error: "CREDENTIALS_NOT_FOUND" },
+        });
+      }
+
+      try {
+        // This is the registered adapter's genuine network-backed test. There is no inferred or
+        // connector-state fallback.
+        const providerResult = await provider.testConnection({
+          organizationId,
+          credentials,
+          configuration: connector.configuration,
+        });
+        return finish(
+          {
+            success: providerResult.success,
+            message: providerResult.success ? "Connection test succeeded" : "Connection test failed",
+            latencyMs: providerResult.latencyMs,
+            diagnostics: {
+              provider: connector.provider,
+              ...(!providerResult.success ? { error: "CONNECTION_ERROR" } : {}),
+            },
+          },
+          {
+            status: providerResult.success ? "CONNECTED" : "ERROR",
+            healthStatus: providerResult.success ? "HEALTHY" : "UNAVAILABLE",
+          }
+        );
+      } catch {
+        logger?.warn("connector_connection_test_failed", { connectorId, provider: connector.provider });
+        return finish(
+          {
+            success: false,
+            message: "Connection test failed",
+            latencyMs: Date.now() - startedAt,
+            diagnostics: { provider: connector.provider, error: "CONNECTION_ERROR" },
+          },
+          { status: "ERROR", healthStatus: "UNAVAILABLE" }
+        );
+      }
     },
 
-    async storeCredentials(organizationId, connectorId, credentials) {
+    async storeCredentials(organizationId, connectorId, credentials, actor) {
       await checkEntitlement(organizationId);
-
       const connector = await db.connectors.get(connectorId, organizationId);
-      if (!connector) {
-        throw new Error("CONNECTOR_NOT_FOUND");
+      if (!connector) throw new Error("CONNECTOR_NOT_FOUND");
+      if (!credentialStore || credentialStore.kind === "UNAVAILABLE") {
+        throw new Error("SECURE_CREDENTIAL_STORE_NOT_CONFIGURED");
       }
 
-      // Phase 14: Store credentials in secure credential store
-      if (credentialStore) {
-        // Validate credentials using provider
-        if (providerRegistry) {
-          const provider = providerRegistry.getProvider(connector.provider);
-          if (provider && !provider.validateCredentials(credentials)) {
-            throw new Error("INVALID_CREDENTIALS");
-          }
+      const provider = providerRegistry?.hasProvider(connector.provider)
+        ? providerRegistry.getProvider(connector.provider)
+        : undefined;
+      if (!provider) throw new Error("CONNECTOR_PROVIDER_NOT_REGISTERED");
+      const allowedFields = new Set(provider.info.credentialFields.map((field) => field.key));
+      const normalized: Record<string, string> = {};
+      for (const [key, value] of Object.entries(credentials)) {
+        if (!allowedFields.has(key) || typeof value !== "string" || value.length > 4096) {
+          throw new Error("INVALID_CREDENTIALS");
         }
-
-        await credentialStore.store(organizationId, connectorId, credentials);
-
-        if (audit) {
-          await audit.log({
-            organizationId,
-            action: "CONNECTOR_CREDENTIALS_STORED",
-            metadata: {
-              connectorId,
-              // Never log actual credentials
-              credentialKeys: Object.keys(credentials),
-            },
-          });
-        }
-
-        return;
+        normalized[key] = value;
       }
+      if (!provider.validateCredentials(normalized)) throw new Error("INVALID_CREDENTIALS");
 
-      throw new Error("Credential store not available");
+      await credentialStore.store(organizationId, connectorId, normalized);
+      await db.connectors.update(connectorId, organizationId, {
+        status: connector.status === "CONNECTED" ? "CONNECTED" : "CONFIGURING",
+      });
+      await recordAudit(
+        organizationId,
+        "CONNECTOR_UPDATED",
+        { connectorId, provider: connector.provider, lifecycle: "credentials_updated" },
+        actor
+      );
     },
 
     async hasCredentials(organizationId, connectorId) {
@@ -609,16 +669,11 @@ export function createConnectorService(deps: {
           configuration: connector.configuration,
         });
 
-        if (audit) {
-          await audit.log({
-            organizationId,
-            action: "CONNECTOR_SCHEMA_DISCOVERED",
-            metadata: {
-              connectorId,
-              objectCount: schema.objects.length,
-            },
-          });
-        }
+        await recordAudit(
+          organizationId,
+          "CONNECTOR_UPDATED",
+          { connectorId, objectCount: schema.entities.length, lifecycle: "schema_discovered" }
+        );
 
         return schema;
       }
@@ -656,7 +711,7 @@ export function createConnectorService(deps: {
       );
 
       if (audit) {
-        await audit.log({
+        await audit.record({
           organizationId,
           action: "CONNECTOR_MAPPING_CREATED",
           metadata: {
@@ -708,7 +763,7 @@ export function createConnectorService(deps: {
       );
 
       if (audit) {
-        await audit.log({
+        await audit.record({
           organizationId,
           action: "CONNECTOR_MAPPING_UPDATED",
           metadata: {
@@ -739,7 +794,7 @@ export function createConnectorService(deps: {
         );
 
         if (audit) {
-          await audit.log({
+          await audit.record({
             organizationId,
             action: "CONNECTOR_MAPPING_DELETED",
             metadata: {
@@ -822,7 +877,7 @@ export function createConnectorService(deps: {
       );
 
       if (audit) {
-        await audit.log({
+        await audit.record({
           organizationId,
           action: "CONNECTOR_SYNC_STARTED",
           metadata: {
@@ -861,13 +916,67 @@ export function createConnectorService(deps: {
 
     async getHealth(organizationId, connectorId) {
       const connector = await db.connectors.get(connectorId, organizationId);
-      if (!connector) {
-        throw new Error("CONNECTOR_NOT_FOUND");
-      }
-
-      // Health is determined by the connector's healthStatus field
-      // In a real implementation, this could call provider.testConnection()
+      if (!connector) throw new Error("CONNECTOR_NOT_FOUND");
       return connector.healthStatus;
+    },
+
+    async getControlConnector(organizationId, connectorId) {
+      const row = await db.connectors.get(connectorId, organizationId);
+      return row ? rowToControl(row) : undefined;
+    },
+
+    async listControlConnectors(organizationId) {
+      await checkEntitlement(organizationId);
+      const rows = await db.connectors.listByOrg(organizationId);
+      return Promise.all(rows.map(rowToControl));
+    },
+
+    async listControlProviders(organizationId) {
+      if (!providerRegistry) return [];
+      const connectors = organizationId ? await db.connectors.listByOrg(organizationId) : [];
+      const statuses = organizationId
+        ? await Promise.all(
+            connectors.map(async (row) =>
+              connectorControlStatus(row, (await credentialStore?.exists(organizationId, row.id)) ?? false)
+            )
+          )
+        : [];
+      const rank: Record<ControlCenterStatus, number> = {
+        CONNECTED: 5,
+        DEGRADED: 4,
+        UNAVAILABLE: 3,
+        UNKNOWN: 2,
+        NOT_CONFIGURED: 1,
+      };
+
+      return providerRegistry.listRegistrations().map(({ provider, available }) => {
+        const providerStatuses = connectors
+          .map((connector, index) => ({ connector, status: statuses[index] }))
+          .filter(({ connector }) => connector.provider === provider.info.id)
+          .map(({ status }) => status);
+        const status: ControlCenterStatus = !available
+          ? "UNAVAILABLE"
+          : !organizationId
+            ? "UNKNOWN"
+            : providerStatuses.length === 0
+              ? "NOT_CONFIGURED"
+              : providerStatuses.sort((a, b) => rank[b] - rank[a])[0];
+        return {
+          id: provider.info.id,
+          name: provider.info.name,
+          description: provider.info.description,
+          version: provider.info.version,
+          type: provider.info.type,
+          status,
+          capabilities: { ...provider.info.capabilities },
+          supportedObjects: [...(provider.info.supportedObjects ?? [])],
+          credentialFields: provider.info.credentialFields.map((field) => ({ ...field })),
+        };
+      });
+    },
+
+    credentialStorageKind() {
+      return credentialStore?.kind ?? "UNAVAILABLE";
     },
   };
 }

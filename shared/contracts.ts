@@ -1595,6 +1595,100 @@ export type DataTransformerType = "TRIM" | "LOWERCASE" | "UPPERCASE" | "PHONE_NO
 
 export type ConnectorActivityType = "CONNECTION_TESTED" | "CONNECTOR_ENABLED" | "CONNECTOR_DISABLED" | "SYNC_STARTED" | "SYNC_COMPLETED" | "SYNC_FAILED" | "MAPPING_CHANGED";
 
+/**
+ * The control center intentionally uses one small, provider-independent status vocabulary.
+ * Internal lifecycle states (for example DRAFT or DISABLED) must be normalized before they cross
+ * the control-center API boundary.
+ */
+export const CONTROL_CENTER_STATUSES = [
+  "CONNECTED",
+  "NOT_CONFIGURED",
+  "DEGRADED",
+  "UNAVAILABLE",
+  "UNKNOWN",
+] as const;
+export type ControlCenterStatus = (typeof CONTROL_CENTER_STATUSES)[number];
+
+export interface ConnectorCredentialFieldDto {
+  key: string;
+  label: string;
+  input: "text" | "secret" | "url";
+  required: boolean;
+  /** Safe help copy only. Credential values are never represented by this contract. */
+  description?: string;
+}
+
+export interface ConnectorProviderControlDto {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  type: ConnectorType;
+  status: ControlCenterStatus;
+  capabilities: {
+    connectionTesting: boolean;
+    schemaDiscovery: boolean;
+    inboundSync: boolean;
+    outboundSync: boolean;
+    webhookSupport: boolean;
+    batchOperations: boolean;
+  };
+  supportedObjects: string[];
+  credentialFields: ConnectorCredentialFieldDto[];
+}
+
+export interface ConnectorControlDto {
+  id: string;
+  name: string;
+  provider: string;
+  providerName: string;
+  type: ConnectorType;
+  status: ControlCenterStatus;
+  enabled: boolean;
+  hasCredentials: boolean;
+  connectionTestingSupported: boolean;
+  syncMode: SyncMode;
+  mappingCount: number;
+  lastSyncAt: string | null;
+  lastTestedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TenantConnectorControlCenterDto {
+  providers: ConnectorProviderControlDto[];
+  connectors: ConnectorControlDto[];
+  credentialStorage: "SESSION_ONLY" | "SECURE_EXTERNAL" | "UNAVAILABLE";
+}
+
+export interface TelephonyProviderControlDto {
+  id: string;
+  name: string;
+  kind: "telephony";
+  status: ControlCenterStatus;
+  enabled: boolean;
+  isDefault: boolean;
+  simulation: boolean;
+  transport: "pstn" | "sip" | "webrtc" | "gsm" | "simulation";
+  credentialsConfigured: boolean;
+  webhookConfigured: boolean;
+  capabilities: TelephonyCapabilities;
+  lastHealthCheck: string | null;
+}
+
+export interface PlatformProviderControlCenterDto {
+  telephonyProviders: TelephonyProviderControlDto[];
+  connectorProviders: ConnectorProviderControlDto[];
+  generatedAt: string;
+}
+
+export interface ProviderHealthControlResultDto {
+  providerId: string;
+  status: ControlCenterStatus;
+  latencyMs: number;
+  checkedAt: string;
+}
+
 export interface DataConnectorRow extends OrganizationOwned {
   id: string;
   name: string;

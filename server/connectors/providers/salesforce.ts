@@ -12,7 +12,7 @@
 import type {
   ConnectorTestResult,
   ConnectorSchema,
-} from "../../shared/contracts";
+} from "../../../shared/contracts";
 import type {
   ConnectorProvider,
   ConnectorProviderInfo,
@@ -23,18 +23,6 @@ import type {
   SyncResult,
 } from "./base";
 import type { Logger } from "../../lib/observability";
-
-/**
- * Salesforce credential structure
- */
-interface SalesforceCredentials {
-  clientId: string;
-  clientSecret: string;
-  username: string;
-  password: string;
-  securityToken: string;
-  instanceUrl?: string; // Optional: for sandbox or custom instances
-}
 
 /**
  * Salesforce configuration
@@ -70,11 +58,25 @@ export class SalesforceProvider implements ConnectorProvider {
       connectionTesting: true,
       schemaDiscovery: true,
       inboundSync: true,
-      outboundSync: true,
+      outboundSync: false,
       webhookSupport: false, // Phase 14 does not include webhooks
       batchOperations: true,
     },
     supportedObjects: ["Contact", "Account", "Lead", "Opportunity", "Case"],
+    credentialFields: [
+      { key: "clientId", label: "Connected App client ID", input: "text", required: true },
+      { key: "clientSecret", label: "Connected App client secret", input: "secret", required: true },
+      { key: "username", label: "Salesforce username", input: "text", required: true },
+      { key: "password", label: "Salesforce password", input: "secret", required: true },
+      { key: "securityToken", label: "Salesforce security token", input: "secret", required: true },
+      {
+        key: "instanceUrl",
+        label: "Login URL",
+        input: "url",
+        required: false,
+        description: "Optional Salesforce login host, such as https://test.salesforce.com.",
+      },
+    ],
   };
 
   private readonly config: SalesforceConfig;
@@ -130,14 +132,13 @@ export class SalesforceProvider implements ConnectorProvider {
         latencyMs: Date.now() - startTime,
         diagnostics: {
           provider: "salesforce",
-          instanceUrl: tokenResponse.instance_url,
           apiVersion: this.config.apiVersion,
-          username: request.credentials.username,
         },
       };
-    } catch (error) {
+    } catch {
       this.logger.error("salesforce_connection_test_failed", {
-        error: error instanceof Error ? error.message : String(error),
+        provider: "salesforce",
+        reason: "connection_error",
       });
 
       return {
@@ -205,21 +206,24 @@ export class SalesforceProvider implements ConnectorProvider {
           updateable: describe.updateable,
           deletable: describe.deletable,
         });
-      } catch (error) {
+      } catch {
         this.logger.error("salesforce_describe_error", {
           objectType,
-          error: error instanceof Error ? error.message : String(error),
+          reason: "provider_error",
         });
       }
     }
 
     return {
-      objects,
-      metadata: {
-        provider: "salesforce",
-        apiVersion: this.config.apiVersion,
-        discoveredAt: new Date().toISOString(),
-      },
+      entities: objects.map((object) => ({
+        name: object.name,
+        fields: object.fields.map((field: any) => ({
+          name: String(field.name),
+          type: String(field.type),
+          required: field.required === true,
+          description: typeof field.label === "string" ? field.label : undefined,
+        })),
+      })),
     };
   }
 
@@ -267,10 +271,10 @@ export class SalesforceProvider implements ConnectorProvider {
       });
 
       if (!queryResponse.ok) {
-        const errorText = await queryResponse.text();
+        // Do not read or log provider response bodies: they can echo request or identity data.
         this.logger.error("salesforce_query_failed", {
           status: queryResponse.status,
-          error: errorText,
+          provider: "salesforce",
         });
         return {
           success: false,
@@ -300,18 +304,18 @@ export class SalesforceProvider implements ConnectorProvider {
             transformedRecord[mapping.targetField] = this.transformValue(
               sourceValue,
               mapping.transformerType,
-              mapping.transformerConfig || {}
+              {}
             );
           }
 
           // In a real implementation, this would save to CenterAI domain model
           // For now, we just count the record
           recordsProcessed++;
-        } catch (error) {
+        } catch {
           recordsFailed++;
           errors.push({
-            recordId: record.Id,
-            message: error instanceof Error ? error.message : String(error),
+            recordId: typeof record.Id === "string" ? record.Id : undefined,
+            message: "Record transformation failed",
           });
         }
       }
@@ -329,23 +333,17 @@ export class SalesforceProvider implements ConnectorProvider {
           query: soql.substring(0, 200),
         },
       };
-    } catch (error) {
+    } catch {
       this.logger.error("salesforce_sync_inbound_failed", {
-        error: error instanceof Error ? error.message : String(error),
+        provider: "salesforce",
+        reason: "provider_error",
       });
 
       return {
         success: false,
         recordsProcessed: 0,
         recordsFailed: 0,
-        errors: [
-          {
-            message: "Inbound sync failed",
-            details: {
-              error: error instanceof Error ? error.message : String(error),
-            },
-          },
-        ],
+        errors: [{ message: "Inbound sync failed" }],
         metadata: {},
       };
     }
@@ -355,67 +353,26 @@ export class SalesforceProvider implements ConnectorProvider {
    * Sync data to Salesforce (outbound)
    */
   async syncOutbound(request: SyncRequest): Promise<SyncResult> {
-    const startTime = Date.now();
-    const errors: SyncResult["errors"] = [];
-    let recordsProcessed = 0;
-    let recordsFailed = 0;
-
-    try {
-      // Authenticate
-      const tokenResponse = await this.authenticate(request.credentials);
-      const instanceUrl = tokenResponse.instance_url;
-
-      // In a real implementation, this would:
-      // 1. Read records from CenterAI domain model
-      // 2. Transform based on mappings (reverse direction)
-      // 3. Send to Salesforce via REST API
-
-      // For now, return a placeholder result
-      this.logger.info("salesforce_sync_outbound_placeholder", {
-        objectType: request.objectType,
-        direction: "OUTBOUND",
-      });
-
-      return {
-        success: true,
-        recordsProcessed: 0,
-        recordsFailed: 0,
-        errors: [],
-        metadata: {
-          provider: "salesforce",
-          objectType: request.objectType,
-          durationMs: Date.now() - startTime,
-          note: "Outbound sync not yet implemented in Phase 14",
-        },
-      };
-    } catch (error) {
-      this.logger.error("salesforce_sync_outbound_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-
-      return {
-        success: false,
-        recordsProcessed: 0,
-        recordsFailed: 0,
-        errors: [
-          {
-            message: "Outbound sync failed",
-            details: {
-              error: error instanceof Error ? error.message : String(error),
-            },
-          },
-        ],
-        metadata: {},
-      };
-    }
+    this.logger.warn("salesforce_sync_outbound_unavailable", {
+      provider: "salesforce",
+      objectType: request.objectType,
+    });
+    return {
+      success: false,
+      recordsProcessed: 0,
+      recordsFailed: 0,
+      errors: [{ message: "Outbound sync is unavailable" }],
+      metadata: { provider: "salesforce", supported: false },
+    };
   }
 
   /**
    * OAuth2 authentication with Salesforce
    */
   private async authenticate(credentials: ConnectorCredentials): Promise<SalesforceTokenResponse> {
-    const instanceUrl = credentials.instanceUrl || this.config.defaultInstanceUrl;
-    const tokenUrl = `${instanceUrl}/services/oauth2/token`;
+    const requestedUrl = credentials.instanceUrl || this.config.defaultInstanceUrl;
+    const loginUrl = this.requireSalesforceOrigin(requestedUrl);
+    const tokenUrl = `${loginUrl}/services/oauth2/token`;
 
     const params = new URLSearchParams({
       grant_type: "password",
@@ -434,15 +391,39 @@ export class SalesforceProvider implements ConnectorProvider {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
+      // Never read or log OAuth response bodies. Providers may echo identity or request details.
       this.logger.error("salesforce_auth_failed", {
+        provider: "salesforce",
         status: response.status,
-        error: errorText,
       });
       throw new Error("Salesforce authentication failed");
     }
 
-    return response.json();
+    const token = (await response.json()) as Partial<SalesforceTokenResponse>;
+    if (typeof token.access_token !== "string" || typeof token.instance_url !== "string") {
+      throw new Error("Salesforce authentication response was invalid");
+    }
+    token.instance_url = this.requireSalesforceOrigin(token.instance_url);
+    return token as SalesforceTokenResponse;
+  }
+
+  private requireSalesforceOrigin(value: string): string {
+    let parsed: URL;
+    try {
+      parsed = new URL(value);
+    } catch {
+      throw new Error("Invalid Salesforce login URL");
+    }
+    const hostname = parsed.hostname.toLowerCase();
+    if (
+      parsed.protocol !== "https:" ||
+      parsed.username !== "" ||
+      parsed.password !== "" ||
+      !(hostname === "salesforce.com" || hostname.endsWith(".salesforce.com"))
+    ) {
+      throw new Error("Invalid Salesforce login URL");
+    }
+    return parsed.origin;
   }
 
   /**
@@ -485,7 +466,7 @@ export class SalesforceProvider implements ConnectorProvider {
   private transformValue(
     value: any,
     transformerType?: string | null,
-    config?: Record<string, any>
+    _config?: Record<string, any>
   ): any {
     if (value === null || value === undefined) return null;
 

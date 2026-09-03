@@ -14,7 +14,7 @@
  * - No actual charges
  */
 
-import type { AppMode } from "../../../../shared/contracts";
+import type { AppMode } from "../../../shared/contracts";
 
 /**
  * Provider environment type.
@@ -122,7 +122,7 @@ export function createProductionEnvironmentConfig(
 export function determineProviderEnvironment(
   appMode: AppMode,
   providerIsSimulation: boolean,
-  credentialsConfigured: boolean,
+  _credentialsConfigured: boolean,
   isSandboxMode: boolean
 ): ProviderEnvironment {
   // Demo provider is always in demo environment

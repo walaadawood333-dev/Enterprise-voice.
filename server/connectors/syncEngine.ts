@@ -5,7 +5,7 @@
  * Manages sync job lifecycle and prevents duplicate concurrent syncs.
  */
 
-import type { SyncJobStatus, SyncDirection } from "../shared/contracts";
+import type { SyncDirection } from "../../shared/contracts";
 import type { Db } from "../db/store";
 import type { ConnectorProviderRegistry } from "./providers/registry";
 import type { ConnectorCredentialStore } from "./credentials";
@@ -107,7 +107,8 @@ export class ConnectorSyncEngine {
         completedAt: new Date().toISOString(),
         recordsProcessed: result.recordsProcessed,
         recordsFailed: result.recordsFailed,
-        errorMessage: result.errors.length > 0 ? JSON.stringify(result.errors) : null,
+        // Provider error payloads are untrusted and may echo credential-derived text.
+        errorMessage: result.errors.length > 0 ? `${result.errors.length} provider operation error(s)` : null,
       });
 
       // Update connector last sync time
@@ -124,14 +125,14 @@ export class ConnectorSyncEngine {
     } catch (error) {
       this.logger.error("sync_job_failed", {
         jobId,
-        error: error instanceof Error ? error.message : String(error),
+        reason: "provider_operation_failed",
       });
 
-      // Update job status to FAILED
+      // Never persist provider exception text; it can contain response bodies or request details.
       await this.db.connectorSyncJobs.update(jobId, organizationId, {
         status: "FAILED",
         completedAt: new Date().toISOString(),
-        errorMessage: error instanceof Error ? error.message : "Unknown error",
+        errorMessage: "Provider operation failed",
       });
 
       throw error;
@@ -218,10 +219,10 @@ export class ConnectorSyncEngine {
           since,
           limit,
         });
-      } catch (error) {
+      } catch {
         this.logger.error("sync_job_execution_error", {
           jobId: job.id,
-          error: error instanceof Error ? error.message : String(error),
+          reason: "provider_operation_failed",
         });
       }
     });

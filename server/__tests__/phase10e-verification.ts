@@ -444,39 +444,38 @@ async function testActivityLogging() {
 async function testCredentialSecurity() {
   console.log("\n━━━ 7. Credential Security ━━━");
 
-  await test("Connector DTO does not expose credentials", async () => {
-    const connector = await connectorService.createConnector(TEST_ORG_A, {
-      name: "Security Test",
-      provider: "custom",
-      type: "CUSTOM_API",
-      configuration: {
-        apiKey: "secret123",
-        password: "password456",
-        token: "token789",
-      },
-    });
-
-    // Check that the DTO doesn't have credentialReference exposed
-    const connectorJson = JSON.stringify(connector);
-    assert(!connectorJson.includes("secret123"), "API key should not be in DTO");
-    assert(!connectorJson.includes("password456"), "Password should not be in DTO");
-    assert(!connectorJson.includes("token789"), "Token should not be in DTO");
+  await test("Credential-shaped configuration is rejected", async () => {
+    let rejected = false;
+    try {
+      await connectorService.createConnector(TEST_ORG_A, {
+        name: "Security Test",
+        provider: "custom",
+        type: "CUSTOM_API",
+        configuration: {
+          apiKey: "secret123",
+          password: "password456",
+          token: "token789",
+        },
+      });
+    } catch (error) {
+      rejected = error instanceof Error && error.message === "CREDENTIALS_NOT_ALLOWED_IN_CONFIGURATION";
+    }
+    assert(rejected, "Credential material must never enter connector configuration");
   });
 
-  await test("Configuration stored but not exposed", async () => {
+  await test("Safe configuration is stored but not exposed", async () => {
     const connector = await connectorService.createConnector(TEST_ORG_A, {
       name: "Config Test",
       provider: "custom",
       type: "CUSTOM_API",
       configuration: {
         baseUrl: "https://api.example.com",
-        secretKey: "secret_value",
+        objectType: "Contact",
       },
     });
 
-    // The DTO should not include the configuration object
     const connectorJson = JSON.stringify(connector);
-    assert(!connectorJson.includes("secret_value"), "Secret should not be in DTO");
+    assert(!connectorJson.includes("https://api.example.com"), "Configuration should not be in DTO");
   });
 }
 

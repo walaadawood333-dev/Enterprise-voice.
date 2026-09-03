@@ -22,6 +22,9 @@ import {
   type ApiErrorCode,
   type ApiRequest,
   type CapabilitiesResponse,
+  type ConnectorControlDto,
+  type ConnectorTestResult,
+  type TenantConnectorControlCenterDto,
   type EndSessionDto,
   type HealthResponse,
   type OrganizationBrandingDto,
@@ -166,6 +169,22 @@ export interface ApiClient {
   ): Promise<ApiResult<{ session: AuthSessionDto }>>;
   logout(signal?: AbortSignal): Promise<ApiResult<{ ok: true }>>;
   me(signal?: AbortSignal): Promise<ApiResult<AuthSessionDto>>;
+  connectorControlCenter(signal?: AbortSignal): Promise<ApiResult<TenantConnectorControlCenterDto>>;
+  createConnector(
+    input: { name: string; provider: string },
+    signal?: AbortSignal
+  ): Promise<ApiResult<ConnectorControlDto>>;
+  updateConnector(
+    id: string,
+    patch: { name?: string; enabled?: boolean },
+    signal?: AbortSignal
+  ): Promise<ApiResult<ConnectorControlDto>>;
+  configureConnectorCredentials(
+    id: string,
+    credentials: Record<string, string>,
+    signal?: AbortSignal
+  ): Promise<ApiResult<{ configured: true }>>;
+  testConnector(id: string, signal?: AbortSignal): Promise<ApiResult<ConnectorTestResult>>;
 }
 
 /* ── local transport (browser-side execution of the server handlers) ──── */
@@ -411,6 +430,22 @@ export function createApiClient(): ApiClient {
       run<AgentDto>("PUT", `/api/agents/${encodeURIComponent(id)}`, patch, signal),
     deleteAgent: (id, signal) =>
       run<{ id: string; deleted: true }>("DELETE", `/api/agents/${encodeURIComponent(id)}`, {}, signal),
+
+    connectorControlCenter: (signal) =>
+      run<TenantConnectorControlCenterDto>("GET", "/api/connectors/control-center", undefined, signal),
+    createConnector: (input, signal) =>
+      run<ConnectorControlDto>("POST", "/api/connectors", input, signal),
+    updateConnector: (id, patch, signal) =>
+      run<ConnectorControlDto>("PUT", `/api/connectors/${encodeURIComponent(id)}`, patch, signal),
+    configureConnectorCredentials: (id, credentials, signal) =>
+      run<{ configured: true }>(
+        "POST",
+        `/api/connectors/${encodeURIComponent(id)}/credentials`,
+        credentials,
+        signal
+      ),
+    testConnector: (id, signal) =>
+      run<ConnectorTestResult>("POST", `/api/connectors/${encodeURIComponent(id)}/test`, {}, signal),
 
     async register(input, signal) {
       const result = await run<{ session: AuthSessionDto }>("POST", "/api/auth/register", input, signal);

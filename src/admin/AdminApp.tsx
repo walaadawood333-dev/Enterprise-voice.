@@ -12,6 +12,7 @@ import { AdminOrganizations } from "./pages/AdminOrganizations";
 import { AdminPlans } from "./pages/AdminPlans";
 import { AdminSubscriptions } from "./pages/AdminSubscriptions";
 import { AdminEntitlements } from "./pages/AdminEntitlements";
+import { AdminProviders } from "./pages/AdminProviders";
 
 export function AdminApp() {
   return (
@@ -24,6 +25,7 @@ export function AdminApp() {
         <Route path="plans" element={<AdminPlans />} />
         <Route path="subscriptions" element={<AdminSubscriptions />} />
         <Route path="entitlements" element={<AdminEntitlements />} />
+        <Route path="providers" element={<AdminProviders />} />
         <Route path="*" element={<Navigate to="/admin/overview" replace />} />
       </Route>
     </Routes>

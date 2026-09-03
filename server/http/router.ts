@@ -36,8 +36,15 @@ import { createAuthService } from "../services/auth";
 import { createVoiceOrchestrator } from "../services/voiceSessions";
 import { createConnectorService } from "../services/connectors";
 import { createConnectorProviderRegistry, type ConnectorProviderRegistry } from "../connectors/providers/registry";
-import { createConnectorCredentialStore } from "../connectors/credentials";
+import {
+  createConnectorCredentialStore,
+  type ConnectorCredentialStore,
+} from "../connectors/credentials";
 import { createConnectorSyncEngine } from "../connectors/syncEngine";
+import {
+  platformProviderControlCenter,
+  testTelephonyProvider,
+} from "../services/providerControlCenter";
 import { NO_SECRETS, type RealtimeSecrets } from "../config/secrets";
 import { bearerToken, cookieValue, type AuthBroker } from "./auth/broker";
 import type { RealtimeEndRequest, RealtimeSessionDto } from "../../shared/contracts";
@@ -45,12 +52,7 @@ import {
   createTelephonyGateway,
   DemoTelephonyProvider,
   createProviderRegistry,
-  checkAllProvidersHealth,
   selectProvider,
-  readTelephonyCredentials,
-  buildCredentialSummary,
-  validateAllProviderConfigurations,
-  isProductionReady,
   createOrgProviderPolicy,
   type TelephonyGateway,
   type TelephonyProvider,
@@ -174,6 +176,8 @@ export interface CreateAppOptions {
   auth?: AuthBroker;
   /** Server-only telephony providers. Concrete adapters must never enter the browser bundle. */
   telephonyProviders?: TelephonyProvider[];
+  /** Production must inject an encrypted external implementation; demo/tests use session memory. */
+  connectorCredentialStore?: ConnectorCredentialStore;
   /** True only for adapters that can flush incremental frames (SSE). */
   streamingCapable?: boolean;
 }
@@ -306,7 +310,8 @@ export function createApp(options: CreateAppOptions = {}): App {
    * Phase 14 — Enterprise Connector Services
    */
   const connectorProviderRegistry = createConnectorProviderRegistry(logger);
-  const connectorCredentialStore = createConnectorCredentialStore();
+  const connectorCredentialStore =
+    options.connectorCredentialStore ?? createConnectorCredentialStore(env.appMode);
   const connectorSyncEngine = createConnectorSyncEngine(db, connectorProviderRegistry, connectorCredentialStore, logger);
   const connectors = createConnectorService({
     db,
@@ -757,7 +762,8 @@ export function createApp(options: CreateAppOptions = {}): App {
 
     /* ── telephony gateway ── */
     if (path === "/api/telephony/providers" && method === "GET") {
-      return ok(app.telephony.providerInfo());
+      requirePlatformAdmin(ctx);
+      return ok((await platformProviderControlCenter(app.providerRegistry, app.connectors)).telephonyProviders);
     }
 
     if (path === "/api/telephony/media" && method === "GET") {
@@ -1028,40 +1034,34 @@ export function createApp(options: CreateAppOptions = {}): App {
       return ok({ received: true });
     }
 
-    /* ── provider registry (Phase 8A) ── */
+    /* ── platform provider registry ── */
     if (path === "/api/telephony/registry" && method === "GET") {
-      return ok(app.providerRegistry.list());
+      requirePlatformAdmin(ctx);
+      return ok((await platformProviderControlCenter(app.providerRegistry, app.connectors)).telephonyProviders);
     }
 
     if (path === "/api/telephony/registry/health" && method === "GET") {
-      return ok(checkAllProvidersHealth(app.providerRegistry, logger));
+      requirePlatformAdmin(ctx);
+      const results = await Promise.all(
+        app.providerRegistry.list().map((entry) =>
+          testTelephonyProvider(app.providerRegistry, entry.providerId, logger)
+        )
+      );
+      return ok(results.filter(Boolean));
     }
 
     if (path === "/api/telephony/registry/summary" && method === "GET") {
-      const telephonyCreds = readTelephonyCredentials(options.envSource ?? {});
-      const validations = validateAllProviderConfigurations(telephonyProviders, telephonyCreds, env.appMode, logger);
-      const prodReady = isProductionReady(telephonyProviders, telephonyCreds, env.appMode);
-      const defaultProvider = app.providerRegistry.getDefaultActive();
+      requirePlatformAdmin(ctx);
+      const registry = await platformProviderControlCenter(app.providerRegistry, app.connectors);
       return ok({
-        providers: app.providerRegistry.list(),
-        activeProviderId: defaultProvider?.info.id ?? null,
+        ...registry,
         environment: env.appMode,
-        canMakeProductionCalls: prodReady,
-        credentialSummary: buildCredentialSummary(telephonyCreds),
-        configurationValidations: validations,
-        selectionPolicy: {
-          method: defaultProvider ? "system_default" : "none",
-          notes: prodReady
-            ? ["Production provider is configured and ready."]
-            : env.appMode === "demo"
-              ? ["Demo mode active — no production provider required."]
-              : ["No production provider configured. Set TELEPHONY_API_KEY and configure a provider."],
-        },
+        canMakeProductionCalls: app.providerRegistry.hasProductionProvider(),
       });
     }
 
     if (path === "/api/telephony/registry/selection" && method === "POST") {
-      requireSession(ctx);
+      requirePlatformAdmin(ctx);
       const body = asObject(request.body);
       const outcome = selectProvider(
         {
@@ -1073,46 +1073,123 @@ export function createApp(options: CreateAppOptions = {}): App {
         app.providerRegistry,
         logger
       );
-      return ok(outcome);
+      const providers = (await platformProviderControlCenter(app.providerRegistry, app.connectors)).telephonyProviders;
+      return ok({
+        providerId: outcome.providerId,
+        selected: outcome.selected,
+        selectionMethod: outcome.selectionMethod,
+        status: outcome.providerId
+          ? providers.find((provider) => provider.id === outcome.providerId)?.status ?? "UNKNOWN"
+          : "UNAVAILABLE",
+      });
     }
 
     /* ── organization provider policy (Phase 8A) ── */
     if (path === "/api/telephony/organizations/providers" && method === "GET") {
       requireSession(ctx);
-      return ok(app.orgProviderPolicy.list(ctx.organizationId));
+      const [rows, control] = await Promise.all([
+        app.orgProviderPolicy.list(ctx.organizationId),
+        platformProviderControlCenter(app.providerRegistry, app.connectors),
+      ]);
+      return ok(rows.map((row) => ({
+        ...row,
+        status: row.enabled
+          ? control.telephonyProviders.find((provider) => provider.id === row.provider)?.status ?? "UNAVAILABLE"
+          : "UNAVAILABLE",
+      })));
     }
 
     if (path === "/api/telephony/organizations/providers" && method === "POST") {
-      requireSession(ctx);
-      authorize(ctx, ["owner", "admin"]);
+      requireTenantConnectorAdmin(ctx);
       const body = asObject(request.body);
-      return ok(
-        app.orgProviderPolicy.upsert({
-          organizationId: ctx.organizationId,
-          provider: String(body.provider ?? ""),
-          enabled: body.enabled !== false,
-          isDefault: body.isDefault === true,
-          configurationReference: optionalString(body, "configurationReference", 120),
-        }),
-        201
-      );
+      const providerId = sanitizeText(body.provider, 64);
+      if (!app.providerRegistry.get(providerId)) {
+        throw new ApiError("BAD_REQUEST", "Telephony provider is not registered by the platform.");
+      }
+      const existing = await db.orgProviders.findByOrgAndProvider(ctx.organizationId, providerId);
+      const row = await app.orgProviderPolicy.upsert({
+        organizationId: ctx.organizationId,
+        provider: providerId,
+        enabled: body.enabled !== false,
+        isDefault: body.isDefault === true,
+        // Platform provider configuration is never accepted through a tenant route.
+        configurationReference: null,
+      });
+      await audit.record({
+        organizationId: ctx.organizationId,
+        actorId: ctx.userId,
+        action: "PROVIDER_POLICY_CHANGED",
+        metadata: { providerId, lifecycle: existing ? "updated" : "created" },
+      });
+      const control = await platformProviderControlCenter(app.providerRegistry, app.connectors);
+      return ok({
+        ...row,
+        status: row.enabled
+          ? control.telephonyProviders.find((provider) => provider.id === row.provider)?.status ?? "UNAVAILABLE"
+          : "UNAVAILABLE",
+      }, 201);
     }
 
     if (path === "/api/telephony/organizations/providers/default" && method === "GET") {
       requireSession(ctx);
-      return ok(app.orgProviderPolicy.getDefault(ctx.organizationId));
+      const row = await app.orgProviderPolicy.getDefault(ctx.organizationId);
+      if (!row) return ok(null);
+      const control = await platformProviderControlCenter(app.providerRegistry, app.connectors);
+      return ok({
+        ...row,
+        status: row.enabled
+          ? control.telephonyProviders.find((provider) => provider.id === row.provider)?.status ?? "UNAVAILABLE"
+          : "UNAVAILABLE",
+      });
     }
 
     const orgProviderMatch = path.match(/^\/api\/telephony\/organizations\/providers\/([A-Za-z0-9_.:-]{4,64})$/);
     if (orgProviderMatch) {
       requireSession(ctx);
       const providerConfigId = orgProviderMatch[1];
-      if (method === "GET") return ok(app.orgProviderPolicy.get(ctx.organizationId, providerConfigId));
-      if (method === "DELETE") return ok({ deleted: await app.orgProviderPolicy.remove(ctx.organizationId, providerConfigId) });
+      if (method === "GET") {
+        const row = await app.orgProviderPolicy.get(ctx.organizationId, providerConfigId);
+        const control = await platformProviderControlCenter(app.providerRegistry, app.connectors);
+        return ok({
+          ...row,
+          status: row.enabled
+            ? control.telephonyProviders.find((provider) => provider.id === row.provider)?.status ?? "UNAVAILABLE"
+            : "UNAVAILABLE",
+        });
+      }
+      if (method === "DELETE") {
+        requireTenantConnectorAdmin(ctx);
+        const row = await app.orgProviderPolicy.get(ctx.organizationId, providerConfigId);
+        const deleted = await app.orgProviderPolicy.remove(ctx.organizationId, providerConfigId);
+        if (deleted) {
+          await audit.record({
+            organizationId: ctx.organizationId,
+            actorId: ctx.userId,
+            action: "PROVIDER_POLICY_CHANGED",
+            metadata: { providerId: row.provider, lifecycle: "disabled" },
+          });
+        }
+        return ok({ deleted });
+      }
       if (method === "PATCH") {
-        authorize(ctx, ["owner", "admin"]);
+        requireTenantConnectorAdmin(ctx);
         const body = asObject(request.body);
-        if (body.isDefault === true) return ok(app.orgProviderPolicy.setDefault(ctx.organizationId, providerConfigId));
+        if (body.isDefault === true) {
+          const row = await app.orgProviderPolicy.setDefault(ctx.organizationId, providerConfigId);
+          await audit.record({
+            organizationId: ctx.organizationId,
+            actorId: ctx.userId,
+            action: "PROVIDER_POLICY_CHANGED",
+            metadata: { providerId: row.provider, lifecycle: "updated", isDefault: true },
+          });
+          const control = await platformProviderControlCenter(app.providerRegistry, app.connectors);
+          return ok({
+            ...row,
+            status: row.enabled
+              ? control.telephonyProviders.find((provider) => provider.id === row.provider)?.status ?? "UNAVAILABLE"
+              : "UNAVAILABLE",
+          });
+        }
         return methodNotAllowed(["GET", "DELETE", "PATCH (set isDefault:true)"]);
       }
       return methodNotAllowed(["GET", "DELETE", "PATCH"]);
@@ -1985,13 +2062,23 @@ export function createApp(options: CreateAppOptions = {}): App {
         throw new ApiError("FORBIDDEN", "Data Connectors feature not enabled.");
       }
       
-      // Return list of available connector providers
-      if (!app.connectorProviderRegistry) {
-        return ok([]);
+      return ok(await app.connectors.listControlProviders(ctx.organizationId));
+    }
+
+    if (path === "/api/connectors/control-center" && method === "GET") {
+      requireSession(ctx);
+      if (!(await entitlements.hasFeature(ctx.organizationId, "data_connectors"))) {
+        throw new ApiError("FORBIDDEN", "Data Connectors feature not enabled.");
       }
-      
-      const providers = app.connectorProviderRegistry.listProviders();
-      return ok(providers.map(p => p.info));
+      const [providers, connectors] = await Promise.all([
+        app.connectors.listControlProviders(ctx.organizationId),
+        app.connectors.listControlConnectors(ctx.organizationId),
+      ]);
+      return ok({
+        providers,
+        connectors,
+        credentialStorage: app.connectors.credentialStorageKind(),
+      });
     }
 
     if (path === "/api/connectors" && method === "GET") {
@@ -2000,31 +2087,35 @@ export function createApp(options: CreateAppOptions = {}): App {
         throw new ApiError("FORBIDDEN", "Data Connectors feature not enabled.");
       }
       
-      const filters: any = {};
-      if (searchParams.get("type")) filters.type = searchParams.get("type");
-      if (searchParams.get("status")) filters.status = searchParams.get("status");
-      
-      const connectors = await app.connectors.listConnectors(ctx.organizationId, filters);
+      const connectors = await app.connectors.listControlConnectors(ctx.organizationId);
       return ok(connectors);
     }
 
     if (path === "/api/connectors" && method === "POST") {
-      requireSession(ctx);
+      requireTenantConnectorAdmin(ctx);
       if (!(await entitlements.hasFeature(ctx.organizationId, "data_connectors"))) {
         throw new ApiError("FORBIDDEN", "Data Connectors feature not enabled.");
       }
-      
+
       const body = asObject(request.body);
-      const connector = await app.connectors.createConnector(ctx.organizationId, {
-        name: String(body.name ?? ""),
-        provider: String(body.provider ?? ""),
-        type: String(body.type ?? "CRM") as any,
-        syncMode: body.syncMode as any,
-        scheduleCron: body.scheduleCron as string,
-        configuration: body.configuration as Record<string, any>,
-      });
-      
-      return ok(connector, 201);
+      const providerId = sanitizeText(body.provider, 64);
+      const provider = app.connectorProviderRegistry?.hasProvider(providerId)
+        ? app.connectorProviderRegistry.getProvider(providerId)
+        : undefined;
+      if (!provider) throw new ApiError("BAD_REQUEST", "Connector provider is not registered.");
+      const connector = await app.connectors.createConnector(
+        ctx.organizationId,
+        {
+          name: sanitizeName(body.name),
+          provider: providerId,
+          type: provider.info.type,
+          syncMode: body.syncMode as any,
+          scheduleCron: body.scheduleCron as string,
+          configuration: body.configuration as Record<string, any>,
+        },
+        { actorId: ctx.userId }
+      );
+      return ok(await app.connectors.getControlConnector(ctx.organizationId, connector.id), 201);
     }
 
     const connectorMatch = path.match(/^\/api\/connectors\/([A-Za-z0-9_.:-]{4,64})$/);
@@ -2034,62 +2125,65 @@ export function createApp(options: CreateAppOptions = {}): App {
         throw new ApiError("FORBIDDEN", "Data Connectors feature not enabled.");
       }
       
-      const connector = await app.connectors.getConnector(ctx.organizationId, connectorMatch[1]);
-      if (!connector) {
-        return ok({ error: "Connector not found" }, 404);
-      }
-      
+      const connector = await app.connectors.getControlConnector(ctx.organizationId, connectorMatch[1]);
+      if (!connector) throw notFound("Connector");
       return ok(connector);
     }
 
     if (connectorMatch && method === "PUT") {
-      requireSession(ctx);
+      requireTenantConnectorAdmin(ctx);
       if (!(await entitlements.hasFeature(ctx.organizationId, "data_connectors"))) {
         throw new ApiError("FORBIDDEN", "Data Connectors feature not enabled.");
       }
-      
+
       const body = asObject(request.body);
-      const connector = await app.connectors.updateConnector(ctx.organizationId, connectorMatch[1], {
-        name: body.name as string,
-        status: body.status as any,
-        syncMode: body.syncMode as any,
-        scheduleCron: body.scheduleCron as string,
-        configuration: body.configuration as Record<string, any>,
-        enabled: body.enabled as boolean,
-      });
-      
-      if (!connector) {
-        return ok({ error: "Connector not found" }, 404);
-      }
-      
-      return ok(connector);
+      const connector = await app.connectors.updateConnector(
+        ctx.organizationId,
+        connectorMatch[1],
+        {
+          name: body.name === undefined ? undefined : sanitizeName(body.name),
+          syncMode: body.syncMode as any,
+          scheduleCron: body.scheduleCron as string,
+          configuration: body.configuration as Record<string, any>,
+          enabled: typeof body.enabled === "boolean" ? body.enabled : undefined,
+        },
+        { actorId: ctx.userId }
+      );
+      if (!connector) throw notFound("Connector");
+      return ok(await app.connectors.getControlConnector(ctx.organizationId, connector.id));
     }
 
     if (connectorMatch && method === "DELETE") {
-      requireSession(ctx);
+      requireTenantConnectorAdmin(ctx);
       if (!(await entitlements.hasFeature(ctx.organizationId, "data_connectors"))) {
         throw new ApiError("FORBIDDEN", "Data Connectors feature not enabled.");
       }
       
-      const deleted = await app.connectors.deleteConnector(ctx.organizationId, connectorMatch[1]);
-      if (!deleted) {
-        return ok({ error: "Connector not found" }, 404);
-      }
-      
+      const deleted = await app.connectors.deleteConnector(
+        ctx.organizationId,
+        connectorMatch[1],
+        { actorId: ctx.userId }
+      );
+      if (!deleted) throw notFound("Connector");
       return ok({ success: true });
     }
 
     const connectorCredentialsMatch = path.match(/^\/api\/connectors\/([A-Za-z0-9_.:-]{4,64})\/credentials$/);
     if (connectorCredentialsMatch && method === "POST") {
-      requireSession(ctx);
+      requireTenantConnectorAdmin(ctx);
       if (!(await entitlements.hasFeature(ctx.organizationId, "data_connectors"))) {
         throw new ApiError("FORBIDDEN", "Data Connectors feature not enabled.");
       }
       
       const body = asObject(request.body);
-      await app.connectors.storeCredentials(ctx.organizationId, connectorCredentialsMatch[1], body);
-      
-      return ok({ success: true, message: "Credentials stored securely" });
+      await app.connectors.storeCredentials(
+        ctx.organizationId,
+        connectorCredentialsMatch[1],
+        body,
+        { actorId: ctx.userId }
+      );
+      // Values and even submitted field names are deliberately absent from the response.
+      return ok({ configured: true });
     }
 
     if (connectorCredentialsMatch && method === "GET") {
@@ -2104,18 +2198,22 @@ export function createApp(options: CreateAppOptions = {}): App {
 
     const connectorTestMatch = path.match(/^\/api\/connectors\/([A-Za-z0-9_.:-]{4,64})\/test$/);
     if (connectorTestMatch && method === "POST") {
-      requireSession(ctx);
+      requireTenantConnectorAdmin(ctx);
       if (!(await entitlements.hasFeature(ctx.organizationId, "data_connectors"))) {
         throw new ApiError("FORBIDDEN", "Data Connectors feature not enabled.");
       }
       
-      const result = await app.connectors.testConnection(ctx.organizationId, connectorTestMatch[1]);
+      const result = await app.connectors.testConnection(
+        ctx.organizationId,
+        connectorTestMatch[1],
+        { actorId: ctx.userId }
+      );
       return ok(result);
     }
 
     const connectorSchemaMatch = path.match(/^\/api\/connectors\/([A-Za-z0-9_.:-]{4,64})\/schema$/);
     if (connectorSchemaMatch && method === "GET") {
-      requireSession(ctx);
+      requireTenantConnectorAdmin(ctx);
       if (!(await entitlements.hasFeature(ctx.organizationId, "data_connectors"))) {
         throw new ApiError("FORBIDDEN", "Data Connectors feature not enabled.");
       }
@@ -2140,7 +2238,7 @@ export function createApp(options: CreateAppOptions = {}): App {
     }
 
     if (connectorMappingsMatch && method === "POST") {
-      requireSession(ctx);
+      requireTenantConnectorAdmin(ctx);
       if (!(await entitlements.hasFeature(ctx.organizationId, "data_connectors"))) {
         throw new ApiError("FORBIDDEN", "Data Connectors feature not enabled.");
       }
@@ -2161,7 +2259,7 @@ export function createApp(options: CreateAppOptions = {}): App {
 
     const connectorMappingMatch = path.match(/^\/api\/connectors\/([A-Za-z0-9_.:-]{4,64})\/mappings\/([A-Za-z0-9_.:-]{4,64})$/);
     if (connectorMappingMatch && method === "PUT") {
-      requireSession(ctx);
+      requireTenantConnectorAdmin(ctx);
       if (!(await entitlements.hasFeature(ctx.organizationId, "data_connectors"))) {
         throw new ApiError("FORBIDDEN", "Data Connectors feature not enabled.");
       }
@@ -2190,7 +2288,7 @@ export function createApp(options: CreateAppOptions = {}): App {
     }
 
     if (connectorMappingMatch && method === "DELETE") {
-      requireSession(ctx);
+      requireTenantConnectorAdmin(ctx);
       if (!(await entitlements.hasFeature(ctx.organizationId, "data_connectors"))) {
         throw new ApiError("FORBIDDEN", "Data Connectors feature not enabled.");
       }
@@ -2210,7 +2308,7 @@ export function createApp(options: CreateAppOptions = {}): App {
 
     const connectorSyncMatch = path.match(/^\/api\/connectors\/([A-Za-z0-9_.:-]{4,64})\/sync$/);
     if (connectorSyncMatch && method === "POST") {
-      requireSession(ctx);
+      requireTenantConnectorAdmin(ctx);
       if (!(await entitlements.hasFeature(ctx.organizationId, "data_connectors"))) {
         throw new ApiError("FORBIDDEN", "Data Connectors feature not enabled.");
       }
@@ -2263,8 +2361,9 @@ export function createApp(options: CreateAppOptions = {}): App {
         throw new ApiError("FORBIDDEN", "Data Connectors feature not enabled.");
       }
       
-      const health = await app.connectors.getHealth(ctx.organizationId, connectorHealthMatch[1]);
-      return ok({ health });
+      const connector = await app.connectors.getControlConnector(ctx.organizationId, connectorHealthMatch[1]);
+      if (!connector) throw notFound("Connector");
+      return ok({ status: connector.status });
     }
 
     /* ── Phase 10C — Reporting Center APIs ── */
@@ -2729,6 +2828,55 @@ export function createApp(options: CreateAppOptions = {}): App {
       const limit = query.limit ? Math.min(parseInt(query.limit, 10) || 100, 500) : 100;
       const events = await audit.listByOrg(ctx.organizationId, limit);
       return ok(events);
+    }
+
+    /* ── Platform Providers & Connectors Control Center ── */
+    if (path === "/api/admin/providers" && method === "GET") {
+      requirePlatformAdmin(ctx);
+      return ok(await platformProviderControlCenter(app.providerRegistry, app.connectors));
+    }
+
+    const adminProviderTestMatch = path.match(
+      /^\/api\/admin\/providers\/([A-Za-z0-9_.:-]{2,64})\/test$/
+    );
+    if (adminProviderTestMatch && method === "POST") {
+      requirePlatformAdmin(ctx);
+      const result = await testTelephonyProvider(app.providerRegistry, adminProviderTestMatch[1], logger);
+      if (!result) throw notFound("Provider");
+      await audit.record({
+        organizationId: null,
+        actorId: ctx.userId,
+        action: "PROVIDER_POLICY_CHANGED",
+        metadata: {
+          providerId: result.providerId,
+          lifecycle: "tested",
+          status: result.status,
+          latencyMs: result.latencyMs,
+        },
+      });
+      return ok(result);
+    }
+
+    const adminProviderMatch = path.match(/^\/api\/admin\/providers\/([A-Za-z0-9_.:-]{2,64})$/);
+    if (adminProviderMatch && method === "PATCH") {
+      requirePlatformAdmin(ctx);
+      const body = asObject(request.body);
+      if (typeof body.enabled !== "boolean") throw new ApiError("BAD_REQUEST", "enabled must be a boolean.");
+      const entry = app.providerRegistry.get(adminProviderMatch[1]);
+      if (!entry) throw notFound("Provider");
+      app.providerRegistry.setEnabled(adminProviderMatch[1], body.enabled);
+      await audit.record({
+        organizationId: null,
+        actorId: ctx.userId,
+        action: "PROVIDER_POLICY_CHANGED",
+        metadata: {
+          providerId: adminProviderMatch[1],
+          lifecycle: body.enabled ? "updated" : "disabled",
+          enabled: body.enabled,
+        },
+      });
+      const control = await platformProviderControlCenter(app.providerRegistry, app.connectors);
+      return ok(control.telephonyProviders.find((provider) => provider.id === adminProviderMatch[1]));
     }
 
     /* ── Phase 10A — Admin API ── */
@@ -3327,6 +3475,14 @@ const ok = async (body: unknown, status = 200): Promise<ApiResponse> => ({
 function requireSession(ctx: RequestContext) {
   if (!ctx.userId) {
     throw new ApiError("UNAUTHENTICATED", "Sign in to run an agent session.");
+  }
+}
+
+/** Connector mutations are tenant-admin operations, including in demo mode. */
+function requireTenantConnectorAdmin(ctx: RequestContext) {
+  requireSession(ctx);
+  if (ctx.role !== "owner" && ctx.role !== "admin") {
+    throw new ApiError("FORBIDDEN", "Tenant owner or administrator access required.");
   }
 }
 

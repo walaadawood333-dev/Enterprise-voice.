@@ -51,7 +51,7 @@ async function testProviderRegistry() {
   assert(info.capabilities.connectionTesting === true, "Should support connection testing");
   assert(info.capabilities.schemaDiscovery === true, "Should support schema discovery");
   assert(info.capabilities.inboundSync === true, "Should support inbound sync");
-  assert(info.capabilities.outboundSync === true, "Should support outbound sync");
+  assert(info.capabilities.outboundSync === false, "Should not claim unimplemented outbound sync");
 
   // Test 3: List providers
   const providers = registry.listProviders();
