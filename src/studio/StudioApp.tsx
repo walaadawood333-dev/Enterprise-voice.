@@ -1,6 +1,6 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { DashboardLayout } from "./components/DashboardLayout";
-import { RequireAuth } from "./RequireAuth";
+import { RequireTenantRole } from "@/auth/RouteGuards";
 import { OverviewPage } from "./pages/Overview";
 import { AgentsPage } from "./pages/Agents";
 import { AgentDetailPage } from "./pages/AgentDetail";
@@ -19,7 +19,7 @@ import { TenantBrandingProvider } from "@/branding/TenantBrandingProvider";
  */
 export function StudioApp() {
   return (
-    <RequireAuth>
+    <RequireTenantRole>
       <TenantBrandingProvider>
         <Routes>
           <Route element={<DashboardLayout />}>
@@ -37,6 +37,6 @@ export function StudioApp() {
           </Route>
         </Routes>
       </TenantBrandingProvider>
-    </RequireAuth>
+    </RequireTenantRole>
   );
 }

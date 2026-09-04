@@ -23,9 +23,8 @@ import type {
   CallEventDto,
   CallEventRow,
   CallRow,
-  CallStatus,
 } from "../../shared/contracts";
-import { CALL_TERMINAL, normalizeCallStatus } from "../../shared/contracts";
+import { CALL_TERMINAL } from "../../shared/contracts";
 import { assertCallTransition, eventToCallStatus, isCallTerminal } from "./callStateMachine";
 import type { TelephonyEvent, TelephonyProvider } from "./provider";
 import { verifyWebhook, type WebhookContext } from "./webhooks";
@@ -233,7 +232,17 @@ export function createTelephonyGateway(deps: TelephonyGatewayDeps) {
       const provider = resolveProvider(input.providerId);
       const { event } = input;
 
-      // Step 1: Webhook verification (unless explicitly skipped for demo).
+      // Step 1: Webhook verification. Only internal demo simulation may bypass signatures.
+      if (input.skipVerification && (env.appMode !== "demo" || !provider.info.simulation)) {
+        throw new ApiError("UNAUTHORIZED", "Webhook verification cannot be bypassed.");
+      }
+      if (
+        !input.skipVerification &&
+        !input.webhookContext &&
+        (env.appMode === "production" || !provider.info.simulation)
+      ) {
+        throw new ApiError("UNAUTHORIZED", "Webhook verification context is required.");
+      }
       if (!input.skipVerification && input.webhookContext) {
         // Check if this providerEventId was already seen (replay detection).
         const existingEventForReplay = await db.callEvents.findByProviderEventId(

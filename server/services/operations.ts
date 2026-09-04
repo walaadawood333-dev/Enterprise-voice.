@@ -15,15 +15,11 @@
 
 import type {
   CallDirection,
-  CallOutcome,
-  CallRow,
   CallStatus,
-  CampaignRow,
   CampaignContactDto,
   CampaignContactRow,
   ContactQueueStatus,
   CustomerContextDto,
-  EngineMode,
   LiveCallDetailDto,
   LiveCallDto,
   MessageRole,
@@ -31,10 +27,7 @@ import type {
   OperationsOverviewDto,
   OperationalAlertDto,
   OperationalAlertRow,
-  OperationalAlertSeverity,
-  OperationalAlertSource,
   SupervisorDashboardDto,
-  VoiceSessionRow,
 } from "../../shared/contracts";
 import type { Db } from "../db/store";
 
@@ -113,10 +106,10 @@ export interface OperationsCampaignDetailDto {
  * Supported call controls — derived from provider capabilities.
  * Only return true for controls the backend can actually perform.
  */
-function getCallControls(provider: string | null, callStatus: CallStatus | null, sessionStatus: string) {
+function getCallControls(_provider: string | null, callStatus: CallStatus | null, sessionStatus: string) {
   // Only active calls can have controls applied
   const isActive = sessionStatus === "active" ||
-    (callStatus && !["completed", "failed", "cancelled"].includes(callStatus));
+    Boolean(callStatus && !["completed", "failed", "cancelled"].includes(callStatus));
 
   return {
     // End call is universally supported (terminate the session)
@@ -156,11 +149,6 @@ export function createOperationsService(deps: {
     return agent?.name ?? agentId;
   }
 
-  async function getCampaignName(organizationId: string, campaignId: string | null): Promise<string | null> {
-    if (!campaignId) return null;
-    const campaign = await db.campaigns.get(campaignId, organizationId);
-    return campaign?.name ?? null;
-  }
 
   function alertToDto(row: OperationalAlertRow): OperationalAlertDto {
     return {
@@ -203,9 +191,8 @@ export function createOperationsService(deps: {
       const now = new Date();
       const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
 
-      const [calls, sessions, campaigns, agents] = await Promise.all([
+      const [calls, campaigns, agents] = await Promise.all([
         db.calls.listByOrg(organizationId),
-        db.sessions.listByOrg(organizationId),
         db.campaigns.listByOrg(organizationId),
         db.agents.listByOrg(organizationId),
       ]);
@@ -731,6 +718,8 @@ export function createOperationsService(deps: {
         phoneNumber: input.phoneNumber,
         displayName: input.displayName,
         status: "PENDING",
+        voiceSessionId: null,
+        callId: null,
         metadata: input.metadata ?? {},
       });
 

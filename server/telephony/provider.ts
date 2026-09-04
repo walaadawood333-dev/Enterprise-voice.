@@ -14,7 +14,7 @@
  * Only one method mutates state: `handleProviderEvent`. Everything else is read or setup.
  */
 
-import type { AgentLanguage, CallDirection, CallStatus } from "../../shared/contracts";
+import type { AgentLanguage, CallStatus } from "../../shared/contracts";
 
 /**
  * Provider-neutral event emitted by every telephony vendor adapter.

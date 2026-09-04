@@ -13,7 +13,6 @@
  * All vendor-specific providers (Twilio, SignalWire, etc.) must extend this class.
  */
 
-import type { CallStatus } from "../../../../shared/contracts";
 import type {
   TelephonyProvider,
   TelephonyProviderInfo,

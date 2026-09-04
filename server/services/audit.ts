@@ -5,6 +5,7 @@
 import type { AuditAction, AuditEventRow } from "../../shared/contracts";
 import type { Db } from "../db/store";
 import { isSensitiveCredentialKey, scrubCredentials } from "../connectors/credentials";
+import { redactString } from "../lib/observability";
 
 export interface AuditService {
   record(input: {
@@ -21,23 +22,28 @@ export interface AuditService {
 }
 
 function safeString(value: string): string {
-  return value
-    .replace(/authorization:\s*bearer\s+\S+/gi, "authorization: [REDACTED]")
-    .replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)=)[^\s&]+/gi, "$1[REDACTED]");
+  return redactString(value).slice(0, 2_000);
 }
 
 /** Flatten recursively scrubbed metadata to the primitive-only database contract. */
 export function scrubSecrets(obj: Record<string, unknown>): Record<string, string | number | boolean | null> {
   const result: Record<string, string | number | boolean | null> = {};
-  for (const [key, value] of Object.entries(obj)) {
-    if (isSensitiveCredentialKey(key) || value === undefined) continue;
-    if (value === null || typeof value === "number" || typeof value === "boolean") {
+  for (const [rawKey, value] of Object.entries(obj).slice(0, 64)) {
+    const key = rawKey.replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 100);
+    if (!key || isSensitiveCredentialKey(key) || value === undefined) continue;
+    if (value === null || typeof value === "boolean") {
       result[key] = value;
+    } else if (typeof value === "number") {
+      result[key] = Number.isFinite(value) ? value : safeString(String(value));
     } else if (typeof value === "string") {
       result[key] = safeString(value);
     } else {
-      const scrubbed = scrubCredentials(value);
-      result[key] = safeString(JSON.stringify(scrubbed));
+      try {
+        const scrubbed = scrubCredentials(value);
+        result[key] = safeString(JSON.stringify(scrubbed));
+      } catch {
+        result[key] = "[unserializable]";
+      }
     }
   }
   return result;
@@ -55,10 +61,11 @@ export function createAuditService(db: Db): AuditService {
         ipAddress: input.ipAddress ?? null,
       });
     },
-    listByOrg: (organizationId, limit) => db.audit.listByOrg(organizationId, limit),
-    listAll: (limit) => db.audit.listAll(limit),
+    listByOrg: (organizationId, limit) =>
+      db.audit.listByOrg(organizationId, Math.min(1_000, Math.max(1, Math.trunc(limit ?? 100)))),
+    listAll: (limit) => db.audit.listAll(Math.min(1_000, Math.max(1, Math.trunc(limit ?? 100)))),
     async countByOrg(organizationId): Promise<number> {
-      return (await db.audit.listByOrg(organizationId)).length;
+      return (await db.audit.listByOrg(organizationId, 1_000)).length;
     },
   };
 }

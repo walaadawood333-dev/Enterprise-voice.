@@ -28,6 +28,9 @@ enum UserRole {
   MANAGER
   OPERATOR
   VIEWER
+  SUPER_ADMIN
+  PLATFORM_ADMIN
+  PLATFORM_OPERATOR
 }
 
 enum UserStatus {

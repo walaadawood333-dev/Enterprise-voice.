@@ -1,3 +1,4 @@
+import { apiFetch } from "@/api";
 import { useEffect, useState } from "react";
 import { Ban, Check, Loader2, RotateCcw } from "lucide-react";
 
@@ -11,7 +12,7 @@ type Payload = {
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, { ...init, credentials: "include", headers: { "content-type": "application/json" } });
+  const response = await apiFetch(path, { ...init, credentials: "include", headers: { "content-type": "application/json" } });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body?.error?.message ?? `Request failed (${response.status})`);
   return body as T;

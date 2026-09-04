@@ -24,13 +24,30 @@ const REDACT_PATTERNS = [
 
 export const REDACTED = "[redacted]";
 
+/** Redact credential values even when a caller placed them under a non-sensitive field name. */
+export function redactString(value: string): string {
+  return value
+    .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/gi, REDACTED)
+    .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, REDACTED)
+    .replace(/\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/g, REDACTED)
+    .replace(
+      /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|client[_-]?secret|webhook[_-]?secret|jwt[_-]?secret)\s*[=:]\s*["']?)[^\s&"']+/gi,
+      `$1${REDACTED}`
+    )
+    .slice(0, 2_000);
+}
+
 export function isSensitiveKey(key: string) {
   return REDACT_PATTERNS.some((re) => re.test(key));
 }
 
 export function redact<T>(value: T, depth = 0): T {
-  if (depth > 4 || value === null || value === undefined) return value as T;
+  if (value === null || value === undefined) return value as T;
+  if (depth > 4) {
+    return (typeof value === "string" ? redactString(value) : REDACTED) as T;
+  }
   if (Array.isArray(value)) return value.map((v) => redact(v, depth + 1)) as unknown as T;
+  if (typeof value === "string") return redactString(value) as T;
   if (typeof value !== "object") return value;
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {

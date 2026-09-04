@@ -135,7 +135,7 @@ export interface UserRow extends OrganizationOwned {
   id: string;
   email: string;
   name: string;
-  role: OrgRole;
+  role: UserRole;
   status: UserStatus;
   createdAt: string;
   updatedAt: string;
@@ -148,7 +148,7 @@ export interface UserRow extends OrganizationOwned {
 export interface UserCredential {
   userId: string;
   organizationId: string;
-  role: OrgRole;
+  role: UserRole;
   status: UserStatus;
   passwordHash: string;
 }
@@ -158,7 +158,7 @@ export interface AuthSessionDto {
   organizationId: string;
   email: string;
   name: string;
-  role: OrgRole;
+  role: UserRole;
   organization: { id: string; name: string; slug: string; status: OrgStatus };
   issuedAt: string;
   expiresAt: string;
@@ -602,7 +602,9 @@ export type AuditAction =
   | "ALERT_ACKNOWLEDGED"
   | "ALERT_RESOLVED"
   | "CONTACT_QUEUED"
-  | "CONTACT_SKIPPED";
+  | "CONTACT_SKIPPED"
+  | "AI_EVALUATION_COMPLETED"
+  | "AI_EVALUATION_FAILED";
 
 export interface AuditEventRow {
   id: string;
@@ -965,6 +967,8 @@ export interface ApiRequest {
   query?: Record<string, string>;
   headers: Record<string, string>;
   body?: unknown;
+  /** Original bytes decoded as UTF-8. Required for cryptographic webhook verification. */
+  rawBody?: string;
 }
 
 export interface ApiResponse {
@@ -983,7 +987,7 @@ export interface RequestContext {
   requestId: string;
   organizationId: string;
   userId: string | null;
-  role: OrgRole;
+  role: UserRole;
   authMode: "demo" | "bearer";
   /**
    * True only when the request actually carried a token or session cookie. Demo Mode's implicit
@@ -1172,7 +1176,7 @@ export interface WorkspaceBootstrapDto {
     id: string;
     email: string;
     name: string;
-    role: OrgRole;
+    role: UserRole;
     isPlatformAdmin: boolean;
   };
   organization: {

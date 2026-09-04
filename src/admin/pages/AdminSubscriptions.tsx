@@ -1,3 +1,4 @@
+import { apiFetch } from "@/api";
 import { useEffect, useMemo, useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 
@@ -10,7 +11,7 @@ type Subscription = {
 };
 
 async function get<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, { ...init, credentials: "include", headers: { "content-type": "application/json" } });
+  const response = await apiFetch(path, { ...init, credentials: "include", headers: { "content-type": "application/json" } });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body?.error?.message ?? `Request failed (${response.status})`);
   return body as T;

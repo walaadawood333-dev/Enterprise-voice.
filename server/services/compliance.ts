@@ -9,7 +9,6 @@
 import type {
   CompliancePolicyRow,
   ComplianceEvaluationRow,
-  ComplianceCategory,
   ComplianceEvaluationStatus,
   CallRow,
   CampaignRow,
@@ -257,7 +256,7 @@ export function createComplianceService(db: Db): ComplianceService {
      * Evaluate a campaign against a compliance policy.
      */
     async evaluateCampaign(
-      organizationId: string,
+      _organizationId: string,
       policy: CompliancePolicyRow,
       campaign: CampaignRow
     ): Promise<ComplianceEvaluationResult> {

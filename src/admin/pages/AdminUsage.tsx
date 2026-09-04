@@ -1,9 +1,10 @@
+import { apiFetch } from "@/api";
 import { useEffect, useState } from "react";
 import { Building2, Loader2, Megaphone, PhoneCall, RefreshCw, Timer } from "lucide-react";
 import type { PlatformUsageFoundationDto } from "../../../shared/contracts";
 
 async function request<T>(path: string): Promise<T> {
-  const response = await fetch(path, { credentials: "include", headers: { "content-type": "application/json" } });
+  const response = await apiFetch(path, { credentials: "include", headers: { "content-type": "application/json" } });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body?.error?.message ?? `Request failed (${response.status})`);
   return body as T;

@@ -13,11 +13,38 @@ import {
   SERVICE_NAME,
   type ApiRequest,
   type ApiResponse,
+  type DataTransformerType,
   type RequestContext,
 } from "../../shared/contracts";
-import { optionalString, parseQuery, requireId, requireLanguage, sanitizeText } from "../../shared/validate";
+import { optionalString, parseQuery, requireId, requireLanguage, requireString, sanitizeText } from "../../shared/validate";
 
 const sanitizeName = (value: unknown) => sanitizeText(value, 80);
+const boundedInteger = (value: unknown, fallback: number, min: number, max: number) => {
+  const parsed = typeof value === "number" ? value : Number.parseInt(String(value ?? ""), 10);
+  return Number.isInteger(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+};
+const optionalIsoDate = (value: unknown, field: string): string | undefined => {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string" || value.length > 40 || !Number.isFinite(Date.parse(value))) {
+    throw new ApiError("BAD_REQUEST", `${field} must be a valid ISO date.`);
+  }
+  return value;
+};
+const optionalTransformerType = (value: unknown): DataTransformerType | null => {
+  if (value === undefined || value === null || value === "") return null;
+  const allowed: DataTransformerType[] = ["TRIM", "LOWERCASE", "UPPERCASE", "PHONE_NORMALIZATION", "DATE_NORMALIZATION", "NUMBER_NORMALIZATION"];
+  if (typeof value !== "string" || !allowed.includes(value as DataTransformerType)) {
+    throw new ApiError("BAD_REQUEST", "Invalid transformerType.");
+  }
+  return value as DataTransformerType;
+};
+const asOptionalObject = (value: unknown): Record<string, unknown> | undefined => {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new ApiError("BAD_REQUEST", "Expected an object value.");
+  }
+  return value as Record<string, unknown>;
+};
 import { asObject } from "../../shared/validate";
 import {
   publicConfigSummary,
@@ -27,7 +54,7 @@ import {
   type ServerEnv,
   type StartupConfig,
 } from "../config/env";
-import { createMemoryDb, createStore, newId, SCHEMA_SQL, type Db } from "../db/store";
+import { createMemoryDb, createStore, newId, type Db } from "../db/store";
 import { ApiError, configInvalid, createLogger, notFound, rateLimited, toApiError, type Logger } from "../lib/observability";
 import { resolveEngine, type VoiceEngine } from "../providers";
 import { createIntegrations, type IntegrationRegistry } from "../integrations";
@@ -107,6 +134,16 @@ const normalizeAgentId = (raw?: string) =>
 /** Endpoints that must keep answering even when production config is incomplete. */
 const ALWAYS_PUBLIC = ["/api/health", "/api/voice/capabilities", "/api/public/branding", "/api/config"];
 
+/** Routes that are safe without a session. Signed provider callbacks authenticate at the route. */
+const UNAUTHENTICATED_ROUTES = new Set([
+  ...ALWAYS_PUBLIC,
+  "/api/auth/login",
+  "/api/auth/register",
+  "/api/telephony/signalwire/webhook",
+  "/api/telephony/signalwire/laml",
+  "/api/telephony/signalwire/voice",
+]);
+
 export interface AppServices {
   agents: ReturnType<typeof createAgentService>;
   voice: ReturnType<typeof createVoiceService>;
@@ -158,6 +195,7 @@ export interface App {
     search?: string;
     headers: Record<string, string>;
     body?: unknown;
+    rawBody?: string;
     ip?: string;
   }): Promise<ApiResponse>;
 }
@@ -277,6 +315,22 @@ export function createApp(options: CreateAppOptions = {}): App {
     });
   }
   
+  const verifySignalWireRequest = (request: ApiRequest): TelephonyProvider => {
+    if (!env.telephony.configured || env.telephony.activeProvider !== "signalwire") {
+      throw new ApiError("TELEPHONY_PROVIDER_NOT_CONFIGURED", "SignalWire is not configured.");
+    }
+    const provider = telephonyProviders.find((candidate) => candidate.info.id === "signalwire");
+    if (!provider) {
+      throw new ApiError("TELEPHONY_PROVIDER_UNAVAILABLE", "SignalWire is unavailable.");
+    }
+    const rawBody = request.rawBody ??
+      (typeof request.body === "string" ? request.body : JSON.stringify(request.body ?? {}));
+    if (!provider.verifyWebhookSignature(rawBody, request.headers)) {
+      throw new ApiError("UNAUTHORIZED", "Webhook signature verification failed.");
+    }
+    return provider;
+  };
+
   const telephony = createTelephonyGateway({
     db,
     env,
@@ -289,13 +343,18 @@ export function createApp(options: CreateAppOptions = {}): App {
    * The demo provider is auto-registered; production providers are registered by adapters.
    */
   const providerRegistry = createProviderRegistry();
-  providerRegistry.register({
-    provider: new DemoTelephonyProvider(),
-    credentialsConfigured: true,
-    webhookConfigured: false,
-    enabled: true,
-    isDefault: true,
-  });
+  for (const provider of telephonyProviders) {
+    const productionProvider = !provider.info.simulation;
+    providerRegistry.register({
+      provider,
+      credentialsConfigured: productionProvider ? env.telephony.configured : true,
+      webhookConfigured: productionProvider ? env.telephony.signalwire.webhookSecretPresent : false,
+      enabled: productionProvider ? env.appMode === "production" : env.appMode === "demo",
+      isDefault: productionProvider
+        ? env.telephony.activeProvider === provider.info.id
+        : env.appMode === "demo",
+    });
+  }
 
   /*
    * Organization Provider Policy — per-org telephony provider configuration.
@@ -361,8 +420,8 @@ export function createApp(options: CreateAppOptions = {}): App {
     async authenticate(headers) {
       try {
         return await authenticate(env, headers, {
-          demoOrganizationId: DEMO_ORGANIZATION_ID,
           users: db.users,
+          organizations: db.organizations,
           broker: authBroker,
         });
       } catch {
@@ -434,6 +493,7 @@ export function createApp(options: CreateAppOptions = {}): App {
         requireSession(ctx);
         await app.entitlements.assertFeature(ctx.organizationId, "voice_calls");
       }
+      authorize(ctx, ["owner", "admin", "manager", "operator"]);
       const body = asObject(request.body);
       const language = requireLanguage(body, "language");
       const agentId = normalizeAgentId(optionalString(body, "agentId", 64));
@@ -448,6 +508,7 @@ export function createApp(options: CreateAppOptions = {}): App {
 
     if (path === "/api/voice/realtime/end" && method === "POST") {
       if (env.appMode === "production") requireSession(ctx);
+      authorize(ctx, ["owner", "admin", "manager", "operator"]);
       const body = asObject(request.body);
       const sessionId = requireId(body, "sessionId");
       const rawOutcome = optionalString(body, "outcome", 16) ?? "completed";
@@ -487,12 +548,12 @@ export function createApp(options: CreateAppOptions = {}): App {
       const token =
         bearerToken(request.headers["authorization"]) ??
         cookieValue(request.headers["cookie"], app.auth?.cookieName ?? "centerai_session");
-      services.auth.logout(token ?? null);
+      await services.auth.logout(token ?? null);
       return {
         status: 200,
         body: { ok: true },
         headers: app.auth
-          ? { "set-cookie": app.auth.clearCookie(app.auth, env.nodeEnv === "production") }
+          ? { "set-cookie": app.auth.clearCookie(app.auth, env.appMode === "production") }
           : undefined,
       };
     }
@@ -513,6 +574,7 @@ export function createApp(options: CreateAppOptions = {}): App {
 
     if (path === "/api/voice/sessions" && method === "POST") {
       requireSession(ctx);
+      authorize(ctx, ["owner", "admin", "manager", "operator"]);
       const body = asObject(request.body);
       const agentId = requireId(body, "agentId");
       const language = body.language === undefined ? undefined : requireLanguage(body, "language");
@@ -528,6 +590,12 @@ export function createApp(options: CreateAppOptions = {}): App {
       );
     }
 
+    /* ── scripted simulation console (authenticated; never a live-provider bypass) ── */
+    if (path === "/api/voice/sessions/scripted" && method === "GET") {
+      requireSession(ctx);
+      return ok(services.voice.list(ctx.organizationId));
+    }
+
     const sessionMatch = path.match(/^\/api\/voice\/sessions\/([A-Za-z0-9_.:-]{4,64})$/);
     if (sessionMatch) {
       requireSession(ctx);
@@ -541,12 +609,13 @@ export function createApp(options: CreateAppOptions = {}): App {
     );
     if (sessionMessagesMatch && method === "POST") {
       requireSession(ctx);
+      authorize(ctx, ["owner", "admin", "manager", "operator"]);
       const body = asObject(request.body);
       return ok(
         app.voiceEngine.processUserInput({
           organizationId: ctx.organizationId,
           sessionId: sessionMessagesMatch[1],
-          text: String(body.text ?? ""),
+          text: requireString(body, "text", { max: 4_000 }),
         })
       );
     }
@@ -554,6 +623,7 @@ export function createApp(options: CreateAppOptions = {}): App {
     const sessionEndMatch = path.match(/^\/api\/voice\/sessions\/([A-Za-z0-9_.:-]{4,64})\/end$/);
     if (sessionEndMatch && method === "POST") {
       requireSession(ctx);
+      authorize(ctx, ["owner", "admin", "manager", "operator"]);
       const body = asObject(request.body);
       const outcome = optionalString(body, "outcome", 16);
       return ok(
@@ -567,12 +637,9 @@ export function createApp(options: CreateAppOptions = {}): App {
       );
     }
 
-    /* ── scripted demo console (public site) ── */
-    if (path === "/api/voice/sessions/scripted" && method === "GET") {
-      return ok(services.voice.list(ctx.organizationId));
-    }
-
     if (path === "/api/voice/session" && method === "POST") {
+      requireSession(ctx);
+      authorize(ctx, ["owner", "admin", "manager", "operator"]);
       const body = asObject(request.body);
       const language = requireLanguage(body, "language");
       const agentId = optionalString(body, "agentId", 64);
@@ -586,6 +653,8 @@ export function createApp(options: CreateAppOptions = {}): App {
     }
 
     if (path === "/api/voice/message" && method === "POST") {
+      requireSession(ctx);
+      authorize(ctx, ["owner", "admin", "manager", "operator"]);
       const body = asObject(request.body);
       const sessionId = requireId(body, "sessionId");
       const utterance = optionalString(body, "utterance", 2000);
@@ -595,6 +664,8 @@ export function createApp(options: CreateAppOptions = {}): App {
     }
 
     if (path === "/api/voice/end" && method === "POST") {
+      requireSession(ctx);
+      authorize(ctx, ["owner", "admin", "manager", "operator"]);
       const body = asObject(request.body);
       const sessionId = requireId(body, "sessionId");
       return ok(services.voice.end({ organizationId: ctx.organizationId, sessionId }));
@@ -614,11 +685,11 @@ export function createApp(options: CreateAppOptions = {}): App {
     }
 
     if (path === "/api/organizations" && method === "PATCH") {
-      authorize(ctx, ["owner"]);
+      authorize(ctx, ["owner", "admin"]);
       const body = asObject(request.body);
       const updated = await db.organizations.update(ctx.organizationId, {
         ...(body.name !== undefined ? { name: sanitizeName(body.name) } : {}),
-        ...(body.status !== undefined ? { status: body.status as "active" | "trial" | "suspended" } : {}),
+        // Lifecycle status is platform-controlled and cannot be changed by a tenant request.
       });
       if (!updated) throw notFound("Organization");
       return ok(updated);
@@ -650,7 +721,7 @@ export function createApp(options: CreateAppOptions = {}): App {
     }
 
     if (path === "/api/agents" && method === "POST") {
-      authorize(ctx, ["owner", "admin", "manager"]);
+      authorize(ctx, ["owner", "admin"]);
       await app.entitlements.assertFeature(ctx.organizationId, "ai_agents");
       const body = asObject(request.body);
       return ok(
@@ -680,7 +751,7 @@ export function createApp(options: CreateAppOptions = {}): App {
 
       // Full update (PUT) and partial update (PATCH) share one validated path.
       if (method === "PUT" || method === "PATCH") {
-        authorize(ctx, ["owner", "admin", "manager"]);
+        authorize(ctx, ["owner", "admin"]);
         const body = asObject(request.body);
         return ok(
           services.agents.update(ctx.organizationId, agentId, {
@@ -712,6 +783,7 @@ export function createApp(options: CreateAppOptions = {}): App {
     );
     if (turnControlMatch && method === "POST") {
       requireSession(ctx);
+      authorize(ctx, ["owner", "admin", "manager", "operator"]);
       const sessionId = turnControlMatch[1];
       const action = turnControlMatch[2];
       const body = asObject(request.body);
@@ -777,6 +849,7 @@ export function createApp(options: CreateAppOptions = {}): App {
 
     if (path === "/api/telephony/calls" && method === "POST") {
       requireSession(ctx);
+      authorize(ctx, ["owner", "admin", "manager", "operator"]);
       await app.entitlements.assertFeature(ctx.organizationId, "voice_calls");
       await app.entitlements.assertCurrentLimit(ctx.organizationId, "maxMonthlyMinutes");
       const body = asObject(request.body);
@@ -795,6 +868,7 @@ export function createApp(options: CreateAppOptions = {}): App {
 
     if (path === "/api/telephony/calls/simulate/inbound" && method === "POST") {
       requireSession(ctx);
+      authorize(ctx, ["owner", "admin", "manager", "operator"]);
       await app.entitlements.assertFeature(ctx.organizationId, "voice_calls");
       await app.entitlements.assertCurrentLimit(ctx.organizationId, "maxMonthlyMinutes");
       const body = asObject(request.body);
@@ -812,6 +886,7 @@ export function createApp(options: CreateAppOptions = {}): App {
 
     if (path === "/api/telephony/calls/simulate/outbound" && method === "POST") {
       requireSession(ctx);
+      authorize(ctx, ["owner", "admin", "manager", "operator"]);
       await app.entitlements.assertFeature(ctx.organizationId, "voice_calls");
       await app.entitlements.assertCurrentLimit(ctx.organizationId, "maxMonthlyMinutes");
       const body = asObject(request.body);
@@ -844,7 +919,7 @@ export function createApp(options: CreateAppOptions = {}): App {
             occurredAt: typeof event.occurredAt === "string" ? event.occurredAt : new Date().toISOString(),
           },
           webhookContext: {
-            rawBody: JSON.stringify(body),
+            rawBody: request.rawBody ?? JSON.stringify(body),
             headers: request.headers as Record<string, string>,
             appMode: env.appMode,
           },
@@ -857,7 +932,10 @@ export function createApp(options: CreateAppOptions = {}): App {
       requireSession(ctx);
       const callId = telephonyCallMatch[1];
       if (method === "GET") return ok(app.telephony.getCall({ organizationId: ctx.organizationId, callId }));
-      if (method === "DELETE") return ok(app.telephony.endCall({ organizationId: ctx.organizationId, callId }));
+      if (method === "DELETE") {
+        authorize(ctx, ["owner", "admin", "manager", "operator"]);
+        return ok(app.telephony.endCall({ organizationId: ctx.organizationId, callId }));
+      }
       return methodNotAllowed(["GET", "DELETE"]);
     }
 
@@ -870,6 +948,7 @@ export function createApp(options: CreateAppOptions = {}): App {
     const telephonyCallAssignMatch = path.match(/^\/api\/telephony\/calls\/([A-Za-z0-9_.:-]{4,64})\/assign$/);
     if (telephonyCallAssignMatch && method === "POST") {
       requireSession(ctx);
+      authorize(ctx, ["owner", "admin", "manager", "operator"]);
       const body = asObject(request.body);
       return ok(
         app.telephony.assignAgent({
@@ -883,6 +962,7 @@ export function createApp(options: CreateAppOptions = {}): App {
     const telephonyCallEndMatch = path.match(/^\/api\/telephony\/calls\/([A-Za-z0-9_.:-]{4,64})\/end$/);
     if (telephonyCallEndMatch && method === "POST") {
       requireSession(ctx);
+      authorize(ctx, ["owner", "admin", "manager", "operator"]);
       const body = asObject(request.body);
       return ok(
         app.telephony.endCall({
@@ -905,40 +985,14 @@ export function createApp(options: CreateAppOptions = {}): App {
       // This endpoint does NOT require authentication (it's called by SignalWire)
       // Instead, we verify the webhook signature
       
-      if (!env.telephony.configured || env.telephony.activeProvider !== "signalwire") {
-        return ok({ error: "SignalWire provider not configured" }, 400);
-      }
+      const rawBody = request.rawBody ??
+        (typeof request.body === "string" ? request.body : JSON.stringify(request.body ?? {}));
+      const signalwireProvider = verifySignalWireRequest(request) as TelephonyProvider & {
+        normalizeWebhookEvent(payload: unknown): import("../telephony").TelephonyEvent | null;
+      };
 
-      // Get the raw body for signature verification
-      const rawBody = typeof request.body === "string" ? request.body : JSON.stringify(request.body);
-      
-      // Verify webhook signature
-      const signature = request.headers["x-signalwire-signature"];
-      if (!signature) {
-        logger.warn("signalwire_webhook_missing_signature");
-        return ok({ error: "Missing signature" }, 401);
-      }
-
-      // Create SignalWire provider instance for verification
-      const signalwireProvider = telephonyProviders.find((provider) => provider.info.id === "signalwire") as
-        | (typeof telephonyProviders[number] & {
-            verifyWebhookSignature(payload: string, headers: Record<string, string>): boolean;
-            normalizeWebhookEvent(payload: unknown): import("../telephony").TelephonyEvent | null;
-          })
-        | undefined;
-      if (!signalwireProvider) {
-        logger.error("signalwire_provider_not_found");
-        return ok({ error: "SignalWire provider not available" }, 500);
-      }
-
-      const isValid = signalwireProvider.verifyWebhookSignature(rawBody, request.headers);
-      if (!isValid) {
-        logger.warn("signalwire_webhook_invalid_signature");
-        return ok({ error: "Invalid signature" }, 401);
-      }
-
-      // Parse the webhook payload
-      const webhookPayload = typeof request.body === "string" ? JSON.parse(request.body) : request.body;
+      // The shared middleware has already parsed JSON/form bodies while retaining exact raw bytes.
+      const webhookPayload = request.body;
       
       // Normalize the webhook event
       const telephonyEvent = signalwireProvider.normalizeWebhookEvent(webhookPayload);
@@ -948,11 +1002,11 @@ export function createApp(options: CreateAppOptions = {}): App {
       }
 
       // Extract organizationId from custom parameters
-      const organizationId = telephonyEvent.metadata?.organizationId as string | undefined;
-      if (!organizationId) {
-        logger.warn("signalwire_webhook_missing_organization_id");
-        return ok({ error: "Missing organization ID" }, 400);
-      }
+      const organizationId = requireId(
+        { organizationId: telephonyEvent.metadata?.organizationId },
+        "organizationId"
+      );
+      if (!(await db.organizations.get(organizationId))) throw notFound("Organization");
 
       // Process the event through the gateway
       try {
@@ -975,35 +1029,19 @@ export function createApp(options: CreateAppOptions = {}): App {
         });
       } catch (error) {
         logger.error("signalwire_webhook_processing_error", {
-          error: error instanceof Error ? error.message : String(error),
-          providerEventId: telephonyEvent.providerEventId,
+          reason: error instanceof ApiError ? error.code : "provider_processing_failed",
         });
         return ok({ error: "Failed to process webhook event" }, 500);
       }
     }
 
     if (path === "/api/telephony/signalwire/laml" && method === "POST") {
-      // SignalWire LaML webhook endpoint - returns call control instructions
-      // This is called by SignalWire when a call is initiated to get instructions
-      
-      if (!env.telephony.configured || env.telephony.activeProvider !== "signalwire") {
-        return ok({ error: "SignalWire provider not configured" }, 400);
-      }
+      // Provider callbacks are public only at the session layer; every payload is signed.
+      verifySignalWireRequest(request);
+      logger.info("signalwire_laml_request", { verified: true });
 
-      // For Phase 13, we return a simple LaML response that connects to the voice engine
-      // In production, this would be more sophisticated with AI agent routing
-      const callSid = request.body?.CallSid;
-      const from = request.body?.From;
-      const to = request.body?.To;
-
-      logger.info("signalwire_laml_request", {
-        callSid,
-        from,
-        to,
-      });
-
-      // Return LaML XML that tells SignalWire to connect to our voice webhook
-      const voiceWebhookUrl = `${env.appUrl}/api/telephony/signalwire/voice`;
+      // Return LaML XML that tells SignalWire to connect to our voice webhook.
+      const voiceWebhookUrl = new URL("/api/telephony/signalwire/voice", env.appUrl).toString();
       const laxml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
@@ -1019,24 +1057,9 @@ export function createApp(options: CreateAppOptions = {}): App {
     }
 
     if (path === "/api/telephony/signalwire/voice" && method === "POST") {
-      // SignalWire voice media stream handler
-      // This receives the actual audio stream from SignalWire
-      
-      if (!env.telephony.configured || env.telephony.activeProvider !== "signalwire") {
-        return ok({ error: "SignalWire provider not configured" }, 400);
-      }
-
-      // For Phase 13, we log the media stream connection but don't process audio
-      // The voice engine will handle this in a future phase
-      const streamSid = request.body?.streamSid;
-      const event = request.body?.event;
-
-      logger.info("signalwire_voice_stream", {
-        streamSid,
-        event,
-        note: "Phase 13 - Media streaming not yet implemented",
-      });
-
+      verifySignalWireRequest(request);
+      // Do not log stream identifiers or provider payloads.
+      logger.info("signalwire_voice_stream", { verified: true, mediaProcessing: "unavailable" });
       return ok({ received: true });
     }
 
@@ -1535,6 +1558,8 @@ export function createApp(options: CreateAppOptions = {}): App {
       const body = asObject(request.body);
       const name = optionalString(body, "name", 120);
       if (!name) throw new ApiError("BAD_REQUEST", "Campaign name is required");
+      const agentId = optionalString(body, "agentId", 64) || null;
+      if (agentId && !(await db.agents.get(ctx.organizationId, agentId))) throw notFound("Agent");
 
       const campaign = await app.entitlements.withinCurrentLimit(
         ctx.organizationId,
@@ -1543,7 +1568,7 @@ export function createApp(options: CreateAppOptions = {}): App {
           organizationId: ctx.organizationId,
           name,
           description: optionalString(body, "description", 500) || "",
-          agentId: optionalString(body, "agentId", 64) || null,
+          agentId,
           status: "draft",
           direction: body.direction === "INBOUND" || body.direction === "inbound"
             ? "inbound"
@@ -1580,12 +1605,17 @@ export function createApp(options: CreateAppOptions = {}): App {
       }
 
       if (method === "PATCH") {
+        authorize(ctx, ["owner", "admin", "manager"]);
         const body = asObject(request.body);
         const patch: any = {};
 
         if (body.name !== undefined) patch.name = optionalString(body, "name", 120);
         if (body.description !== undefined) patch.description = optionalString(body, "description", 500);
-        if (body.agentId !== undefined) patch.agentId = optionalString(body, "agentId", 64);
+        if (body.agentId !== undefined) {
+          const agentId = optionalString(body, "agentId", 64) ?? null;
+          if (agentId && !(await db.agents.get(ctx.organizationId, agentId))) throw notFound("Agent");
+          patch.agentId = agentId;
+        }
         if (body.status !== undefined) {
           const validStatuses = ["draft", "scheduled", "running", "paused", "completed", "cancelled", "failed"];
           if (!validStatuses.includes(body.status as string)) {
@@ -1605,7 +1635,10 @@ export function createApp(options: CreateAppOptions = {}): App {
           patch.scheduledAt = typeof body.scheduledAt === "string" ? body.scheduledAt : null;
         }
         if (body.totalContacts !== undefined) {
-          patch.totalContacts = typeof body.totalContacts === "number" ? body.totalContacts : 0;
+          if (!Number.isInteger(body.totalContacts) || (body.totalContacts as number) < 0) {
+            throw new ApiError("BAD_REQUEST", "totalContacts must be a non-negative integer.");
+          }
+          patch.totalContacts = body.totalContacts;
         }
 
         const updated = await db.campaigns.update(campaignId, ctx.organizationId, patch);
@@ -1614,6 +1647,7 @@ export function createApp(options: CreateAppOptions = {}): App {
       }
 
       if (method === "DELETE") {
+        authorize(ctx, ["owner", "admin"]);
         const deleted = await db.campaigns.delete(campaignId, ctx.organizationId);
         if (!deleted) throw notFound("Campaign");
         return ok({ deleted: true });
@@ -1646,9 +1680,8 @@ export function createApp(options: CreateAppOptions = {}): App {
       const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
       const orgId = ctx.organizationId;
 
-      const [calls, sessions, campaigns, agents] = await Promise.all([
+      const [calls, campaigns, agents] = await Promise.all([
         db.calls.listByOrg(orgId),
-        db.sessions.listByOrg(orgId),
         db.campaigns.listByOrg(orgId),
         db.agents.listByOrg(orgId),
       ]);
@@ -1691,7 +1724,6 @@ export function createApp(options: CreateAppOptions = {}): App {
       const sessions = await db.sessions.listByOrg(orgId);
       const activeSessions = sessions.filter((s) => s.status === "active" || s.status === "created");
       const calls = await db.calls.listByOrg(orgId);
-      const campaigns = await db.campaigns.listByOrg(orgId);
       const agents = await db.agents.listByOrg(orgId);
       const agentMap = new Map(agents.map((a) => [a.id, a.name]));
 
@@ -1730,7 +1762,6 @@ export function createApp(options: CreateAppOptions = {}): App {
 
       const calls = await db.calls.listByOrg(orgId);
       const relatedCall = calls.find((c) => c.voiceSessionId === sessionId);
-      const campaigns = await db.campaigns.listByOrg(orgId);
       const agents = await db.agents.listByOrg(orgId);
       const agent = agents.find((a) => a.id === session.agentId);
       const messages = await db.messages.listBySession(sessionId, orgId);
@@ -2031,6 +2062,7 @@ export function createApp(options: CreateAppOptions = {}): App {
     const opsAlertAckMatch = path.match(/^\/api\/workspace\/operations\/alerts\/([A-Za-z0-9_.:-]{4,64})\/acknowledge$/);
     if (opsAlertAckMatch && method === "POST") {
       requireSession(ctx);
+      authorize(ctx, ["owner", "admin", "manager", "operator"]);
       if (!(await entitlements.hasFeature(ctx.organizationId, "contact_center_operations"))) {
         throw new ApiError("FORBIDDEN", "Contact Center Operations feature not enabled.");
       }
@@ -2271,14 +2303,21 @@ export function createApp(options: CreateAppOptions = {}): App {
       }
       
       const body = asObject(request.body);
+      const displayOrder = body.displayOrder === undefined ? 0 : Number(body.displayOrder);
+      if (!Number.isSafeInteger(displayOrder) || displayOrder < 0 || displayOrder > 10_000) {
+        throw new ApiError("BAD_REQUEST", "displayOrder must be an integer from 0 to 10000.");
+      }
+      if (body.required !== undefined && typeof body.required !== "boolean") {
+        throw new ApiError("BAD_REQUEST", "required must be a boolean.");
+      }
       const mapping = await app.connectors.createMapping(ctx.organizationId, connectorMappingsMatch[1], {
-        sourceField: String(body.sourceField ?? ""),
-        targetField: String(body.targetField ?? ""),
-        dataType: body.dataType as string,
-        required: body.required as boolean,
-        transformerType: body.transformerType as any,
-        transformerConfig: body.transformerConfig as Record<string, any>,
-        displayOrder: body.displayOrder as number,
+        sourceField: requireString(body, "sourceField", { max: 240 }),
+        targetField: requireString(body, "targetField", { max: 120 }),
+        dataType: optionalString(body, "dataType", 32),
+        required: body.required === true,
+        ...(optionalTransformerType(body.transformerType) ? { transformerType: optionalTransformerType(body.transformerType)! } : {}),
+        transformerConfig: asOptionalObject(body.transformerConfig),
+        displayOrder,
       });
       
       return ok(mapping, 201);
@@ -2292,18 +2331,25 @@ export function createApp(options: CreateAppOptions = {}): App {
       }
       
       const body = asObject(request.body);
+      if (body.required !== undefined && typeof body.required !== "boolean") {
+        throw new ApiError("BAD_REQUEST", "required must be a boolean.");
+      }
+      const displayOrder = body.displayOrder === undefined ? undefined : Number(body.displayOrder);
+      if (displayOrder !== undefined && (!Number.isSafeInteger(displayOrder) || displayOrder < 0 || displayOrder > 10_000)) {
+        throw new ApiError("BAD_REQUEST", "displayOrder must be an integer from 0 to 10000.");
+      }
       const mapping = await app.connectors.updateMapping(
         ctx.organizationId,
         connectorMappingMatch[1],
         connectorMappingMatch[2],
         {
-          sourceField: body.sourceField as string,
-          targetField: body.targetField as string,
-          dataType: body.dataType as string,
-          required: body.required as boolean,
-          transformerType: body.transformerType as any,
-          transformerConfig: body.transformerConfig as Record<string, any>,
-          displayOrder: body.displayOrder as number,
+          ...(body.sourceField !== undefined ? { sourceField: requireString(body, "sourceField", { max: 240 }) } : {}),
+          ...(body.targetField !== undefined ? { targetField: requireString(body, "targetField", { max: 120 }) } : {}),
+          ...(body.dataType !== undefined ? { dataType: requireString(body, "dataType", { max: 32 }) } : {}),
+          ...(body.required !== undefined ? { required: body.required } : {}),
+          ...(body.transformerType !== undefined ? { transformerType: optionalTransformerType(body.transformerType) } : {}),
+          ...(body.transformerConfig !== undefined ? { transformerConfig: asOptionalObject(body.transformerConfig) ?? {} } : {}),
+          ...(displayOrder !== undefined ? { displayOrder } : {}),
         }
       );
       
@@ -2364,7 +2410,7 @@ export function createApp(options: CreateAppOptions = {}): App {
         throw new ApiError("FORBIDDEN", "Data Connectors feature not enabled.");
       }
       
-      const limit = searchParams.get("limit") ? parseInt(searchParams.get("limit")!) : 50;
+      const limit = boundedInteger(searchParams.get("limit"), 50, 1, 200);
       const jobs = await app.connectors.listSyncJobs(ctx.organizationId, connectorSyncJobsMatch[1], limit);
       return ok(jobs);
     }
@@ -2376,7 +2422,7 @@ export function createApp(options: CreateAppOptions = {}): App {
         throw new ApiError("FORBIDDEN", "Data Connectors feature not enabled.");
       }
       
-      const limit = searchParams.get("limit") ? parseInt(searchParams.get("limit")!) : 50;
+      const limit = boundedInteger(searchParams.get("limit"), 50, 1, 200);
       const activities = await app.connectors.listActivities(ctx.organizationId, connectorActivitiesMatch[1], limit);
       return ok(activities);
     }
@@ -2400,9 +2446,13 @@ export function createApp(options: CreateAppOptions = {}): App {
         throw new ApiError("FORBIDDEN", "Reporting feature not enabled for this organization.");
       }
       const filter: any = {};
-      if (query.startDate) filter.startDate = query.startDate;
-      if (query.endDate) filter.endDate = query.endDate;
-      if (query.agentId) filter.agentId = query.agentId;
+      filter.startDate = optionalIsoDate(query.startDate, "startDate");
+      filter.endDate = optionalIsoDate(query.endDate, "endDate");
+      if (query.agentId) {
+        const agentId = requireId({ agentId: query.agentId }, "agentId");
+        if (!(await db.agents.get(ctx.organizationId, agentId))) throw notFound("Agent");
+        filter.agentId = agentId;
+      }
       if (query.direction === "inbound" || query.direction === "outbound") {
         filter.direction = query.direction;
       }
@@ -2416,9 +2466,13 @@ export function createApp(options: CreateAppOptions = {}): App {
         throw new ApiError("FORBIDDEN", "Reporting feature not enabled for this organization.");
       }
       const filter: any = {};
-      if (query.startDate) filter.startDate = query.startDate;
-      if (query.endDate) filter.endDate = query.endDate;
-      if (query.agentId) filter.agentId = query.agentId;
+      filter.startDate = optionalIsoDate(query.startDate, "startDate");
+      filter.endDate = optionalIsoDate(query.endDate, "endDate");
+      if (query.agentId) {
+        const agentId = requireId({ agentId: query.agentId }, "agentId");
+        if (!(await db.agents.get(ctx.organizationId, agentId))) throw notFound("Agent");
+        filter.agentId = agentId;
+      }
       return ok(await reports.generateAgentReport(ctx.organizationId, filter));
     }
 
@@ -2427,9 +2481,10 @@ export function createApp(options: CreateAppOptions = {}): App {
       if (!(await entitlements.hasFeature(ctx.organizationId, "reporting"))) {
         throw new ApiError("FORBIDDEN", "Reporting feature not enabled for this organization.");
       }
-      const filter: any = {};
-      if (query.startDate) filter.startDate = query.startDate;
-      if (query.endDate) filter.endDate = query.endDate;
+      const filter: any = {
+        startDate: optionalIsoDate(query.startDate, "startDate"),
+        endDate: optionalIsoDate(query.endDate, "endDate"),
+      };
       return ok(await reports.generateCampaignReport(ctx.organizationId, filter));
     }
 
@@ -2440,11 +2495,16 @@ export function createApp(options: CreateAppOptions = {}): App {
       }
       authorize(ctx, ["owner", "admin", "manager"]);
       const body = asObject(request.body);
-      const reportType = String(body.reportType ?? "");
-      const filter: any = {};
-      if (body.startDate) filter.startDate = String(body.startDate);
-      if (body.endDate) filter.endDate = String(body.endDate);
-      if (body.agentId) filter.agentId = String(body.agentId);
+      const reportType = requireString(body, "reportType", { max: 20 });
+      const filter: any = {
+        startDate: optionalIsoDate(body.startDate, "startDate"),
+        endDate: optionalIsoDate(body.endDate, "endDate"),
+      };
+      if (body.agentId) {
+        const agentId = requireId(body, "agentId");
+        if (!(await db.agents.get(ctx.organizationId, agentId))) throw notFound("Agent");
+        filter.agentId = agentId;
+      }
 
       let csvData: string;
       let filename: string;
@@ -2849,6 +2909,7 @@ export function createApp(options: CreateAppOptions = {}): App {
     /* ── Phase 10C — Audit Trail API ── */
     if (path === "/api/workspace/audit" && method === "GET") {
       requireSession(ctx);
+      authorize(ctx, ["owner", "admin", "manager"]);
       if (!(await entitlements.hasFeature(ctx.organizationId, "audit_trail"))) {
         throw new ApiError("FORBIDDEN", "Audit Trail feature not enabled for this organization.");
       }
@@ -2878,7 +2939,7 @@ export function createApp(options: CreateAppOptions = {}): App {
       /^\/api\/admin\/providers\/([A-Za-z0-9_.:-]{2,64})\/test$/
     );
     if (adminProviderTestMatch && method === "POST") {
-      requirePlatformAdmin(ctx);
+      requirePlatformManager(ctx);
       const result = await testTelephonyProvider(app.providerRegistry, adminProviderTestMatch[1], logger);
       if (!result) throw notFound("Provider");
       await audit.record({
@@ -2897,7 +2958,7 @@ export function createApp(options: CreateAppOptions = {}): App {
 
     const adminProviderMatch = path.match(/^\/api\/admin\/providers\/([A-Za-z0-9_.:-]{2,64})$/);
     if (adminProviderMatch && method === "PATCH") {
-      requirePlatformAdmin(ctx);
+      requirePlatformManager(ctx);
       const body = asObject(request.body);
       if (typeof body.enabled !== "boolean") throw new ApiError("BAD_REQUEST", "enabled must be a boolean.");
       const entry = app.providerRegistry.get(adminProviderMatch[1]);
@@ -2984,6 +3045,7 @@ export function createApp(options: CreateAppOptions = {}): App {
       requirePlatformAdmin(ctx);
       if (method === "GET") return ok(app.saas.listPlans());
       if (method === "POST") {
+        requirePlatformManager(ctx);
         return ok(
           app.saas.createPlan(request.body, { id: ctx.userId, email: ctx.userId }),
           201
@@ -2996,6 +3058,7 @@ export function createApp(options: CreateAppOptions = {}): App {
     if (adminPlanMatch) {
       requirePlatformAdmin(ctx);
       if (method === "PATCH" || method === "PUT") {
+        requirePlatformManager(ctx);
         return ok(app.saas.updatePlan(adminPlanMatch[1], request.body, { id: ctx.userId, email: ctx.userId }));
       }
       return methodNotAllowed(["PATCH", "PUT"]);
@@ -3010,6 +3073,7 @@ export function createApp(options: CreateAppOptions = {}): App {
     if (adminSubscriptionMatch) {
       requirePlatformAdmin(ctx);
       if (method === "PUT" || method === "PATCH") {
+        requirePlatformManager(ctx);
         return ok(
           app.saas.setSubscription(adminSubscriptionMatch[1], request.body, {
             id: ctx.userId,
@@ -3035,9 +3099,11 @@ export function createApp(options: CreateAppOptions = {}): App {
       const [, organizationId, feature] = adminEntitlementMatch;
       const actor = { id: ctx.userId, email: ctx.userId };
       if (method === "PUT" || method === "PATCH") {
+        requirePlatformManager(ctx);
         return ok(app.saas.setEntitlement(organizationId, feature, request.body, actor));
       }
       if (method === "DELETE") {
+        requirePlatformManager(ctx);
         await app.saas.removeEntitlement(organizationId, feature, actor);
         return ok({ deleted: true, organizationId, feature });
       }
@@ -3100,8 +3166,8 @@ export function createApp(options: CreateAppOptions = {}): App {
     // List organizations with filtering and pagination
     if (path === "/api/admin/v2/organizations" && method === "GET") {
       requirePlatformAdmin(ctx);
-      const limit = parseInt(query.limit ?? "50", 10);
-      const offset = parseInt(query.offset ?? "0", 10);
+      const limit = boundedInteger(query.limit, 50, 1, 200);
+      const offset = boundedInteger(query.offset, 0, 0, 100_000);
       const status = query.status as any;
       const search = query.search;
       
@@ -3150,9 +3216,12 @@ export function createApp(options: CreateAppOptions = {}): App {
     }
     
     // Get organization detail
-    if (path.startsWith("/api/admin/v2/organizations/") && method === "GET") {
+    const adminOrganizationDetailMatch = path.match(
+      /^\/api\/admin\/v2\/organizations\/([A-Za-z0-9_.:-]{4,64})$/
+    );
+    if (adminOrganizationDetailMatch && method === "GET") {
       requirePlatformAdmin(ctx);
-      const orgId = path.split("/")[5];
+      const orgId = adminOrganizationDetailMatch[1];
       
       const org = await db.organizations.get(orgId);
       if (!org) {
@@ -3206,11 +3275,15 @@ export function createApp(options: CreateAppOptions = {}): App {
     }
     
     // Update organization lifecycle
-    if (path.startsWith("/api/admin/v2/organizations/") && path.endsWith("/lifecycle") && method === "POST") {
-      requirePlatformAdmin(ctx);
-      const orgId = path.split("/")[5];
+    const adminLifecycleMatch = path.match(
+      /^\/api\/admin\/v2\/organizations\/([A-Za-z0-9_.:-]{4,64})\/lifecycle$/
+    );
+    if (adminLifecycleMatch && method === "POST") {
+      requirePlatformManager(ctx);
+      const orgId = adminLifecycleMatch[1];
       const body = asObject(request.body);
-      const { action, reason } = body;
+      const action = optionalString(body, "action", 16);
+      const reason = optionalString(body, "reason", 500) ?? "";
       
       if (!action || !["activate", "suspend", "archive"].includes(action)) {
         throw new ApiError("VALIDATION_ERROR", "Invalid action");
@@ -3231,20 +3304,19 @@ export function createApp(options: CreateAppOptions = {}): App {
       
       await audit.record({
         organizationId: orgId,
-        action: `organization.${action}`,
+        action: "ORGANIZATION_UPDATED",
         actorId: ctx.userId ?? "unknown",
         actorEmail: ctx.userId ?? "platform_admin",
         metadata: {
           previousStatus: org.status,
           newStatus: statusMap[action],
-          reason: reason ?? "",
+          reason,
         },
       });
       
       logger.info(`organization_${action}`, {
         organizationId: orgId,
         actorId: ctx.userId,
-        reason,
       });
       
       return ok({ success: true });
@@ -3253,8 +3325,8 @@ export function createApp(options: CreateAppOptions = {}): App {
     // List users with filtering
     if (path === "/api/admin/v2/users" && method === "GET") {
       requirePlatformAdmin(ctx);
-      const limit = parseInt(query.limit ?? "50", 10);
-      const offset = parseInt(query.offset ?? "0", 10);
+      const limit = boundedInteger(query.limit, 50, 1, 200);
+      const offset = boundedInteger(query.offset, 0, 0, 100_000);
       const organizationId = query.organizationId;
       const status = query.status;
       const search = query.search;
@@ -3335,15 +3407,16 @@ export function createApp(options: CreateAppOptions = {}): App {
       const orgs = await db.organizations.list();
       const allConnectors = await Promise.all(orgs.map((o) => db.connectors.listByOrg(o.id)));
       const connectors = allConnectors.flat();
+      const providers = (await platformProviderControlCenter(app.providerRegistry, app.connectors)).telephonyProviders;
       
       return ok({
         database: databaseStatus,
-        providers: [],
+        providers,
         connectors: {
           total: connectors.length,
-          healthy: 0,
-          degraded: 0,
-          unhealthy: 0,
+          healthy: connectors.filter((connector) => connector.healthStatus === "HEALTHY").length,
+          degraded: connectors.filter((connector) => connector.healthStatus === "DEGRADED").length,
+          unhealthy: connectors.filter((connector) => connector.healthStatus === "UNAVAILABLE").length,
         },
         generatedAt: new Date().toISOString(),
       });
@@ -3352,8 +3425,8 @@ export function createApp(options: CreateAppOptions = {}): App {
     // Audit log
     if (path === "/api/admin/v2/audit" && method === "GET") {
       requirePlatformAdmin(ctx);
-      const limit = parseInt(query.limit ?? "100", 10);
-      const offset = parseInt(query.offset ?? "0", 10);
+      const limit = boundedInteger(query.limit, 100, 1, 500);
+      const offset = boundedInteger(query.offset, 0, 0, 100_000);
       const organizationId = query.organizationId;
       const action = query.action;
       
@@ -3385,14 +3458,9 @@ export function createApp(options: CreateAppOptions = {}): App {
       });
     }
 
-    /* ── diagnostics (dev/local only) ── */
+    /* ── redacted diagnostics: capability/presence flags only ── */
     if (path === "/api/config" && method === "GET") {
-      return ok({
-        ...publicConfigSummary(env),
-        requestContext: { organizationId: ctx.organizationId, role: ctx.role, authMode: ctx.authMode },
-        schema: { tables: ["organizations", "users", "agents", "voice_sessions", "messages", "usage_events"], sqlProvided: SCHEMA_SQL.length > 0 },
-        instanceId: newId("api"),
-      });
+      return ok(publicConfigSummary(env));
     }
 
     throw new ApiError("NOT_FOUND", `No route for ${method} ${path}.`, {
@@ -3406,6 +3474,7 @@ export function createApp(options: CreateAppOptions = {}): App {
     search?: string;
     headers: Record<string, string>;
     body?: unknown;
+    rawBody?: string;
     ip?: string;
   }): Promise<ApiResponse> {
     const started = performance.now();
@@ -3421,15 +3490,34 @@ export function createApp(options: CreateAppOptions = {}): App {
         : limiter.take(raw.ip ?? "local");
       if (!decision.allowed) throw rateLimited(Math.ceil(decision.resetInMs / 1000));
 
-      // Identity comes only from the verified session: bearer token → httpOnly cookie →
-      // (Demo Mode) the seeded workspace owner. organizationId is then read from the user row.
-      const ctx = await authenticate(env, raw.headers, {
-        demoOrganizationId: DEMO_ORGANIZATION_ID,
-        users: db.users,
-        broker: authBroker,
-      });
+      // Public routes receive an inert anonymous context. Every other route derives identity only
+      // from a verified bearer token/cookie and then re-loads tenant + role from persisted rows.
+      const ctx: Omit<RequestContext, "requestId"> = UNAUTHENTICATED_ROUTES.has(path)
+        ? {
+            organizationId: DEMO_ORGANIZATION_ID,
+            userId: null,
+            role: "viewer",
+            authMode: "bearer",
+            tokenPresented: false,
+            at: new Date().toISOString(),
+          }
+        : await authenticate(env, raw.headers, {
+            users: db.users,
+            organizations: db.organizations,
+            broker: authBroker,
+          });
+      const platformIdentity = ["super_admin", "platform_admin", "platform_operator"].includes(ctx.role);
+      const platformSurface =
+        path.startsWith("/api/admin") ||
+        path === "/api/telephony/providers" ||
+        path.startsWith("/api/telephony/registry");
+      const identitySurface = path.startsWith("/api/auth/");
+      if (platformIdentity && !platformSurface && !identitySurface) {
+        throw new ApiError("FORBIDDEN", "Platform identities must use the control-plane API.");
+      }
+
       const response = await handle(
-        { method: raw.method, path, query, headers: raw.headers, body: raw.body },
+        { method: raw.method, path, query, headers: raw.headers, body: raw.body, rawBody: raw.rawBody },
         { ...ctx, requestId }
       );
       log(response.status, started, requestId, path, ctx);
@@ -3471,9 +3559,8 @@ const ok = async (body: unknown, status = 200): Promise<ApiResponse> => ({
 });
 
 /**
- * Studio runs require an authenticated context. The implicit Demo Mode tenant has no userId, so
- * this still refuses anonymous use — draft-test access can never be reached without a session,
- * and in production a verified token is mandatory.
+ * Studio runs require an authenticated context in every runtime. Draft-test access can never be
+ * reached without an explicitly issued and verified session.
  */
 function requireSession(ctx: RequestContext) {
   if (!ctx.userId) {
@@ -3503,6 +3590,14 @@ function requirePlatformAdmin(ctx: RequestContext) {
   }
 }
 
+/** Platform operators are read-only; control-plane mutations require a manager role. */
+function requirePlatformManager(ctx: RequestContext) {
+  requirePlatformAdmin(ctx);
+  if (ctx.role !== "super_admin" && ctx.role !== "platform_admin") {
+    throw new ApiError("FORBIDDEN", "Platform manager access required.");
+  }
+}
+
 /**
  * Sets the httpOnly session cookie when a cookie jar exists (a real server response), and returns
  * the token in the body only for the in-browser local transport, which keeps it in memory.
@@ -3519,7 +3614,7 @@ function authResponse(
   const cookieJarAvailable = Boolean(request.headers["host"]);
   const headers: Record<string, string> = { "cache-control": "no-store" };
   if (broker && cookieJarAvailable && result.bearerToken) {
-    headers["set-cookie"] = broker.serializeCookie(broker, result.bearerToken, app.env.nodeEnv === "production");
+    headers["set-cookie"] = broker.serializeCookie(broker, result.bearerToken, app.env.appMode === "production");
   }
   return {
     status,

@@ -13,25 +13,15 @@ import {
   type AgentLanguage,
   type AgentRow,
   type AuditEventRow,
-  type CallDirection,
   type CallEventRow,
-  type CallEventType,
-  type CallOutcome,
-  type CallOutcomeType,
   type CallRow,
-  type CallStatus,
   type CampaignContactPhase12Row,
   type CampaignContactRow,
   type CampaignEventRow,
-  type CampaignEventType12,
   type CampaignRow,
   type CampaignScheduleRow,
-  type ComplianceCategory,
   type ComplianceEvaluationRow,
-  type ComplianceEvaluationStatus,
   type CompliancePolicyRow,
-  type ComplianceSeverity,
-  type ConnectorActivityType,
   type ConnectorStatus,
   type ContactQueueStatus,
   type ContactRow,
@@ -40,36 +30,25 @@ import {
   type DataConnectorFieldMappingRow,
   type DataConnectorRow,
   type DataConnectorSyncJobRow,
-  type DataTransformerType,
   type DialAttemptRow,
   type DialingQueueItemStatus,
   type DNCIdentifierType,
   type DNCRecordRow,
-  type DNCSource,
-  type DNCStatus,
   type IndustryName,
   type InvoiceRow,
-  type InvoiceStatus,
   type MessageRow,
   type OperationalAlertRow,
-  type OperationalAlertSeverity,
-  type OperationalAlertSource,
   type OrganizationBrandingRow,
   type OrganizationEntitlementRow,
   type OrganizationRow,
   type OrganizationTelephonyProviderRow,
-  type OrgRole,
+  type UserRole,
   type PaymentRow,
-  type PaymentStatus,
-  type PaymentMethodType,
   type PhoneValidationStatus,
   type PlanRow,
-  type RetryBackoffStrategy,
   type RetryPolicyRow,
   type SubscriptionRow,
-  type SyncDirection,
   type SyncJobStatus,
-  type SyncMode,
   type UserCredential,
   type UserRow,
   type UsageEventRow,
@@ -81,10 +60,7 @@ import {
   type QAEvaluationScoreRow,
   type QAFindingRow,
   type QATemplateStatus,
-  type QAEvaluationType,
   type QAEvaluationStatus,
-  type QAScoringMethod,
-  type QAFindingSeverity,
   type QAFindingStatus,
 } from "../../shared/contracts";
 import { DEMO_AGENT, DEMO_ORGANIZATION } from "../../shared/demo";
@@ -147,9 +123,14 @@ export interface Db {
       organizationId: string;
       email: string;
       name: string;
-      role: OrgRole;
+      role: UserRole;
       status?: UserRow["status"];
     }): Promise<UserRow>;
+    update(
+      organizationId: string,
+      userId: string,
+      patch: Partial<Pick<UserRow, "name" | "role" | "status">>
+    ): Promise<UserRow | undefined>;
     setPassword(userId: string, passwordHash: string): Promise<void>;
   };
   agents: {
@@ -690,6 +671,13 @@ export function createMemoryDb(): Db {
         };
         data.users.set(row.id, row);
         return row;
+      },
+      update: async (organizationId, userId, patch) => {
+        const user = data.users.get(userId);
+        if (!user || user.organizationId !== organizationId) return undefined;
+        const updated = { ...user, ...patch, updatedAt: now() };
+        data.users.set(userId, updated);
+        return updated;
       },
       setPassword: async (userId, passwordHash) => {
         data.credentials.set(userId, passwordHash);

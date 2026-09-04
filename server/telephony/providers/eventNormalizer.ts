@@ -47,27 +47,18 @@ export interface RawProviderEvent {
  */
 export function normalizeProviderEvent(
   rawEvent: RawProviderEvent,
-  providerId: string
+  _providerId: string
 ): TelephonyEvent | null {
   // Validate required fields
-  if (!rawEvent.eventId) {
-    throw new Error(`[${providerId}] Event missing eventId`);
-  }
-  if (!rawEvent.callId) {
-    throw new Error(`[${providerId}] Event missing callId`);
-  }
-  if (!rawEvent.eventType) {
-    throw new Error(`[${providerId}] Event missing eventType`);
-  }
-  if (!rawEvent.timestamp) {
-    throw new Error(`[${providerId}] Event missing timestamp`);
-  }
+  if (!rawEvent.eventId) throw new Error("Provider event is missing an event identifier.");
+  if (!rawEvent.callId) throw new Error("Provider event is missing a call identifier.");
+  if (!rawEvent.eventType) throw new Error("Provider event is missing an event type.");
+  if (!rawEvent.timestamp) throw new Error("Provider event is missing a timestamp.");
 
-  // Map provider-specific event types to CenterAI event types
-  const eventType = mapEventType(rawEvent.eventType, providerId);
+  // Map provider-specific event types to CenterAI event types.
+  const eventType = mapEventType(rawEvent.eventType, _providerId);
   if (!eventType) {
-    // Unrecognized event type — log and ignore
-    console.warn(`[${providerId}] Unrecognized event type: ${rawEvent.eventType}`);
+    console.warn("telephony_event_type_unrecognized");
     return null;
   }
 
@@ -92,7 +83,7 @@ export function normalizeProviderEvent(
  */
 function mapEventType(
   providerEventType: string,
-  providerId: string
+  _providerId: string
 ): TelephonyEvent["eventType"] | null {
   // Normalize to lowercase for comparison
   const normalized = providerEventType.toLowerCase();
@@ -197,19 +188,19 @@ function scrubMetadata(
  */
 export function normalizeProviderEvents(
   rawEvents: RawProviderEvent[],
-  providerId: string
+  _providerId: string
 ): TelephonyEvent[] {
   const normalized: TelephonyEvent[] = [];
 
   for (const rawEvent of rawEvents) {
     try {
-      const event = normalizeProviderEvent(rawEvent, providerId);
+      const event = normalizeProviderEvent(rawEvent, _providerId);
       if (event) {
         normalized.push(event);
       }
-    } catch (error) {
-      // Log but continue processing other events
-      console.error(`[${providerId}] Failed to normalize event ${rawEvent.eventId}:`, error);
+    } catch {
+      // Continue processing without logging provider payloads or identifiers.
+      console.error("telephony_event_normalization_failed");
     }
   }
 

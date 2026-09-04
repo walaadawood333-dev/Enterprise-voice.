@@ -55,7 +55,7 @@ export class DemoTelephonyProvider implements TelephonyProvider {
    * Simulate initiating an outbound call. Returns immediately with a provider call id.
    * No actual dialling occurs — this is purely a record-creation event.
    */
-  async initiate(input: TelephonyInitiateInput): Promise<TelephonyInitiateResult> {
+  async initiate(_input: TelephonyInitiateInput): Promise<TelephonyInitiateResult> {
     const providerCallId = nextId("call");
     return {
       callId: "",  // Filled by the gateway
@@ -67,7 +67,7 @@ export class DemoTelephonyProvider implements TelephonyProvider {
   /**
    * Simulate hanging up. No real line to disconnect.
    */
-  async hangup(providerCallId: string): Promise<TelephonyHangupResult> {
+  async hangup(_providerCallId: string): Promise<TelephonyHangupResult> {
     return {
       callId: "",  // Filled by the gateway
       status: "completed",

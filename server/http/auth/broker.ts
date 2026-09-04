@@ -8,13 +8,13 @@
  *     "trust" a client-supplied organizationId.
  */
 
-import type { OrgRole } from "../../../shared/contracts";
+import type { UserRole } from "../../../shared/contracts";
 
 export interface AuthClaims {
   /** User id. */
   sub: string;
   organizationId: string;
-  role: OrgRole;
+  role: UserRole;
   /** Seconds since epoch. */
   exp: number;
   iat: number;
@@ -40,7 +40,13 @@ export const cookieValue = (cookieHeader: string | undefined, name: string): str
   if (!cookieHeader) return null;
   for (const part of cookieHeader.split(";")) {
     const [key, ...rest] = part.trim().split("=");
-    if (key === name) return decodeURIComponent(rest.join("=")) || null;
+    if (key === name) {
+      try {
+        return decodeURIComponent(rest.join("=")) || null;
+      } catch {
+        return null;
+      }
+    }
   }
   return null;
 };

@@ -95,7 +95,18 @@ export class SalesforceProvider implements ConnectorProvider {
    */
   validateCredentials(credentials: ConnectorCredentials): boolean {
     const required = ["clientId", "clientSecret", "username", "password", "securityToken"];
-    return required.every((key) => credentials[key] && credentials[key].trim() !== "");
+    if (!required.every((key) => {
+      const value = credentials[key];
+      return typeof value === "string" && value.trim() !== "" && value.length <= 4_096;
+    })) return false;
+    if (credentials.instanceUrl) {
+      try {
+        this.requireSalesforceOrigin(credentials.instanceUrl);
+      } catch {
+        return false;
+      }
+    }
+    return true;
   }
 
   /**
@@ -162,12 +173,14 @@ export class SalesforceProvider implements ConnectorProvider {
     const instanceUrl = tokenResponse.instance_url;
 
     // Get describe for requested objects (or defaults)
-    const objectTypes = request.objectTypes || this.info.supportedObjects || [];
+    const requestedObjectTypes = request.objectTypes || this.info.supportedObjects || [];
+    if (requestedObjectTypes.length > 20) throw new Error("Too many Salesforce object types requested.");
+    const objectTypes = [...new Set(requestedObjectTypes.map((value) => this.requireSupportedObject(value)))];
     const objects = [];
 
     for (const objectType of objectTypes) {
       try {
-        const describeUrl = `${instanceUrl}/services/data/${this.config.apiVersion}/sobjects/${objectType}/describe`;
+        const describeUrl = `${instanceUrl}/services/data/${this.config.apiVersion}/sobjects/${encodeURIComponent(objectType)}/describe`;
         const response = await fetch(describeUrl, {
           headers: {
             Authorization: `Bearer ${tokenResponse.access_token}`,
@@ -237,30 +250,33 @@ export class SalesforceProvider implements ConnectorProvider {
     let recordsFailed = 0;
 
     try {
-      // Authenticate
-      const tokenResponse = await this.authenticate(request.credentials);
-      const instanceUrl = tokenResponse.instance_url;
-
-      // Build SOQL query based on mappings
-      const sourceFields = request.mappings.map((m) => m.sourceField);
+      // SOQL does not support bind parameters for identifiers. Enforce the grammar and
+      // provider allow-list before interpolation, and canonicalize all scalar clauses.
+      const objectType = this.requireSupportedObject(request.objectType);
+      if (request.mappings.length < 1 || request.mappings.length > 200) {
+        throw new Error("Salesforce sync requires between 1 and 200 field mappings.");
+      }
+      const sourceFields = [...new Set(
+        request.mappings.map((mapping) => this.requireSoqlField(mapping.sourceField))
+      )];
       const fieldList = sourceFields.join(", ");
-
-      // Build WHERE clause for incremental sync
-      let whereClause = "";
-      if (request.since) {
-        whereClause = `WHERE LastModifiedDate > ${request.since}`;
+      const since = request.since ? this.requireIsoTimestamp(request.since) : null;
+      const limit = request.limit === undefined ? 200 : request.limit;
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 2_000) {
+        throw new Error("Salesforce sync limit must be an integer from 1 to 2000.");
       }
 
-      // Build LIMIT clause
-      const limitClause = request.limit ? `LIMIT ${request.limit}` : "";
-
-      // Execute query
+      const tokenResponse = await this.authenticate(request.credentials);
+      const instanceUrl = tokenResponse.instance_url;
       const queryUrl = `${instanceUrl}/services/data/${this.config.apiVersion}/query`;
-      const soql = `SELECT ${fieldList} FROM ${request.objectType} ${whereClause} ${limitClause}`;
+      const whereClause = since ? ` WHERE LastModifiedDate > ${since}` : "";
+      const soql = `SELECT ${fieldList} FROM ${objectType}${whereClause} LIMIT ${limit}`;
 
       this.logger.info("salesforce_query_executed", {
-        objectType: request.objectType,
-        soql: soql.substring(0, 200), // Log first 200 chars only
+        objectType,
+        fieldCount: sourceFields.length,
+        limit,
+        incremental: Boolean(since),
       });
 
       const queryResponse = await fetch(`${queryUrl}?q=${encodeURIComponent(soql)}`, {
@@ -290,8 +306,8 @@ export class SalesforceProvider implements ConnectorProvider {
         };
       }
 
-      const queryResult = await queryResponse.json();
-      const records = queryResult.records || [];
+      const queryResult = await queryResponse.json() as { records?: unknown };
+      const records = Array.isArray(queryResult.records) ? queryResult.records.slice(0, limit) : [];
 
       // Process records
       for (const record of records) {
@@ -327,10 +343,9 @@ export class SalesforceProvider implements ConnectorProvider {
         errors,
         metadata: {
           provider: "salesforce",
-          objectType: request.objectType,
+          objectType,
           totalRecords: records.length,
           durationMs: Date.now() - startTime,
-          query: soql.substring(0, 200),
         },
       };
     } catch {
@@ -370,6 +385,7 @@ export class SalesforceProvider implements ConnectorProvider {
    * OAuth2 authentication with Salesforce
    */
   private async authenticate(credentials: ConnectorCredentials): Promise<SalesforceTokenResponse> {
+    if (!this.validateCredentials(credentials)) throw new Error("Invalid Salesforce credentials.");
     const requestedUrl = credentials.instanceUrl || this.config.defaultInstanceUrl;
     const loginUrl = this.requireSalesforceOrigin(requestedUrl);
     const tokenUrl = `${loginUrl}/services/oauth2/token`;
@@ -407,6 +423,45 @@ export class SalesforceProvider implements ConnectorProvider {
     return token as SalesforceTokenResponse;
   }
 
+  private requireSupportedObject(value: string): string {
+    const normalized = this.requireSoqlIdentifier(value);
+    if (!this.info.supportedObjects?.includes(normalized)) {
+      throw new Error("Unsupported Salesforce object type.");
+    }
+    return normalized;
+  }
+
+  private requireSoqlField(value: string): string {
+    if (typeof value !== "string" || value.length > 240) {
+      throw new Error("Invalid Salesforce field name.");
+    }
+    const parts = value.split(".");
+    if (parts.length > 5 || parts.some((part) => this.requireSoqlIdentifier(part) !== part)) {
+      throw new Error("Invalid Salesforce field name.");
+    }
+    return value;
+  }
+
+  private requireSoqlIdentifier(value: string): string {
+    if (typeof value !== "string" || !/^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(value)) {
+      throw new Error("Invalid Salesforce identifier.");
+    }
+    return value;
+  }
+
+  private requireIsoTimestamp(value: string): string {
+    if (
+      typeof value !== "string" ||
+      value.length > 40 ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value)
+    ) {
+      throw new Error("Invalid Salesforce sync timestamp.");
+    }
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) throw new Error("Invalid Salesforce sync timestamp.");
+    return date.toISOString();
+  }
+
   private requireSalesforceOrigin(value: string): string {
     let parsed: URL;
     try {
@@ -419,6 +474,9 @@ export class SalesforceProvider implements ConnectorProvider {
       parsed.protocol !== "https:" ||
       parsed.username !== "" ||
       parsed.password !== "" ||
+      (parsed.port !== "" && parsed.port !== "443") ||
+      parsed.search !== "" ||
+      parsed.hash !== "" ||
       !(hostname === "salesforce.com" || hostname.endsWith(".salesforce.com"))
     ) {
       throw new Error("Invalid Salesforce login URL");

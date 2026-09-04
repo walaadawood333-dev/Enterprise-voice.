@@ -1,3 +1,4 @@
+import { apiFetch } from "@/api";
 import { useEffect, useState } from "react";
 import { BarChart3, TrendingUp, Activity, PhoneCall, Users } from "lucide-react";
 
@@ -33,7 +34,7 @@ export function AnalyticsPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/workspace/analytics")
+    apiFetch("/api/workspace/analytics")
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
       .then(setData)
       .catch(() => setLoading(false));

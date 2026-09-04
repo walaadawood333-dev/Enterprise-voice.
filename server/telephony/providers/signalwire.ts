@@ -23,11 +23,34 @@ import type { ServerEnv } from "../../config/env";
 import type { Logger } from "../../lib/observability";
 import { createHmac } from "crypto";
 
+const normalizeSignalWireSpaceUrl = (value: string): string => {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("SIGNALWIRE_SPACE_URL must be a valid HTTPS SignalWire space URL.");
+  }
+  const allowedHost = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.signalwire\.com$/i.test(parsed.hostname);
+  if (
+    parsed.protocol !== "https:" ||
+    !allowedHost ||
+    parsed.username ||
+    parsed.password ||
+    (parsed.pathname !== "/" && parsed.pathname !== "") ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new Error("SIGNALWIRE_SPACE_URL must be an HTTPS origin under signalwire.com.");
+  }
+  return parsed.origin;
+};
+
 export interface SignalWireConfig {
   projectId: string;
   apiToken: string;
   spaceUrl: string;
   webhookSecret: string;
+  appUrl: string;
 }
 
 /**
@@ -68,8 +91,9 @@ export class SignalWireProvider implements TelephonyProvider {
     this.config = {
       projectId,
       apiToken,
-      spaceUrl: spaceUrl.replace(/\/$/, ""), // Remove trailing slash
+      spaceUrl: normalizeSignalWireSpaceUrl(spaceUrl),
       webhookSecret,
+      appUrl: env.appUrl,
     };
     this.logger = logger;
   }
@@ -87,7 +111,9 @@ export class SignalWireProvider implements TelephonyProvider {
   async initialize(): Promise<boolean> {
     try {
       // Test credentials by fetching account info
-      const response = await fetch(`${this.config.spaceUrl}/api/relay/rest/accounts/${this.config.projectId}`, {
+      const response = await fetch(
+        `${this.config.spaceUrl}/api/relay/rest/accounts/${encodeURIComponent(this.config.projectId)}`,
+        {
         method: "GET",
         headers: {
           Authorization: `Basic ${Buffer.from(`${this.config.projectId}:${this.config.apiToken}`).toString("base64")}`,
@@ -97,10 +123,7 @@ export class SignalWireProvider implements TelephonyProvider {
 
       if (response.ok) {
         this._available = true;
-        this.logger.info("signalwire_provider_initialized", {
-          projectId: this.config.projectId,
-          spaceUrl: this.config.spaceUrl,
-        });
+        this.logger.info("signalwire_provider_initialized", { available: true });
         return true;
       } else {
         this._available = false;
@@ -110,11 +133,9 @@ export class SignalWireProvider implements TelephonyProvider {
         });
         return false;
       }
-    } catch (error) {
+    } catch {
       this._available = false;
-      this.logger.error("signalwire_initialization_error", {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      this.logger.error("signalwire_initialization_error", { reason: "provider_request_failed" });
       return false;
     }
   }
@@ -133,10 +154,10 @@ export class SignalWireProvider implements TelephonyProvider {
       // SignalWire uses LaML (compatible with TwiML) for call control
       // For Phase 13, we'll use a simple voice URL that returns basic instructions
       // In production, this would point to a webhook endpoint that returns LaML
-      voice_url: `${process.env.APP_URL || "http://localhost:8787"}/api/telephony/signalwire/laml`,
+      voice_url: new URL("/api/telephony/signalwire/laml", this.config.appUrl).toString(),
       voice_method: "POST",
       // Webhook for call events
-      status_callback: `${process.env.APP_URL || "http://localhost:8787"}/api/telephony/signalwire/webhook`,
+      status_callback: new URL("/api/telephony/signalwire/webhook", this.config.appUrl).toString(),
       status_callback_method: "POST",
       // Pass organization and call metadata
       status_callback_event: ["started", "ringing", "answered", "completed"],
@@ -159,17 +180,18 @@ export class SignalWireProvider implements TelephonyProvider {
       });
 
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`SignalWire API error: ${response.status} ${response.statusText} - ${errorText}`);
+        this.logger.error("signalwire_call_request_rejected", { status: response.status });
+        throw new Error("SignalWire call request failed.");
       }
 
-      const result = await response.json();
+      const result = await response.json() as { id?: unknown };
+      if (typeof result.id !== "string" || !/^[A-Za-z0-9_.:-]{1,128}$/.test(result.id)) {
+        throw new Error("SignalWire returned an invalid call identifier.");
+      }
 
       this.logger.info("signalwire_call_initiated", {
         organizationId: input.organizationId,
         providerCallId: result.id,
-        from: callPayload.from,
-        to: callPayload.to,
       });
 
       return {
@@ -177,13 +199,12 @@ export class SignalWireProvider implements TelephonyProvider {
         providerCallId: result.id,
         status: "created",
       };
-    } catch (error) {
+    } catch {
       this.logger.error("signalwire_call_initiation_failed", {
         organizationId: input.organizationId,
-        to: input.toNumber,
-        error: error instanceof Error ? error.message : String(error),
+        reason: "provider_request_failed",
       });
-      throw error;
+      throw new Error("Telephony provider request failed.");
     }
   }
 
@@ -194,9 +215,14 @@ export class SignalWireProvider implements TelephonyProvider {
     if (!this._available) {
       throw new Error("SignalWire provider is not available");
     }
+    if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(providerCallId)) {
+      throw new Error("Invalid provider call identifier.");
+    }
 
     try {
-      const response = await fetch(`${this.config.spaceUrl}/api/relay/rest/calls/${providerCallId}`, {
+      const response = await fetch(
+        `${this.config.spaceUrl}/api/relay/rest/calls/${encodeURIComponent(providerCallId)}`,
+        {
         method: "DELETE",
         headers: {
           Authorization: `Basic ${Buffer.from(`${this.config.projectId}:${this.config.apiToken}`).toString("base64")}`,
@@ -205,9 +231,8 @@ export class SignalWireProvider implements TelephonyProvider {
       });
 
       if (!response.ok && response.status !== 404) {
-        // 404 means the call is already ended
-        const errorText = await response.text();
-        throw new Error(`SignalWire hangup error: ${response.status} ${response.statusText} - ${errorText}`);
+        this.logger.error("signalwire_hangup_request_rejected", { status: response.status });
+        throw new Error("SignalWire hangup request failed.");
       }
 
       this.logger.info("signalwire_call_ended", {
@@ -218,12 +243,12 @@ export class SignalWireProvider implements TelephonyProvider {
         callId: "", // Will be set by the gateway
         status: "completed",
       };
-    } catch (error) {
+    } catch {
       this.logger.error("signalwire_hangup_failed", {
         providerCallId,
-        error: error instanceof Error ? error.message : String(error),
+        reason: "provider_request_failed",
       });
-      throw error;
+      throw new Error("Telephony provider request failed.");
     }
   }
 
@@ -249,18 +274,11 @@ export class SignalWireProvider implements TelephonyProvider {
       // Compare signatures (constant-time comparison to prevent timing attacks)
       const isValid = this.timingSafeEqual(computedSignature, signature);
 
-      if (!isValid) {
-        this.logger.warn("signalwire_webhook_invalid_signature", {
-          computedSignature: computedSignature.substring(0, 8) + "...",
-          providedSignature: signature.substring(0, 8) + "...",
-        });
-      }
+      if (!isValid) this.logger.warn("signalwire_webhook_invalid_signature");
 
       return isValid;
-    } catch (error) {
-      this.logger.error("signalwire_webhook_verification_error", {
-        error: error instanceof Error ? error.message : String(error),
-      });
+    } catch {
+      this.logger.error("signalwire_webhook_verification_error", { reason: "verification_failed" });
       return false;
     }
   }
@@ -303,7 +321,13 @@ export class SignalWireProvider implements TelephonyProvider {
       const eventType = webhookPayload.event_type;
       const payload = webhookPayload.payload;
 
-      if (!eventType || !payload) {
+      if (
+        typeof eventType !== "string" ||
+        !payload ||
+        typeof payload !== "object" ||
+        typeof payload.id !== "string" ||
+        !/^[A-Za-z0-9_.:-]{1,128}$/.test(payload.id)
+      ) {
         this.logger.warn("signalwire_webhook_invalid_structure");
         return null;
       }
@@ -324,27 +348,33 @@ export class SignalWireProvider implements TelephonyProvider {
           telephonyEventType = "call_completed";
           break;
         default:
-          this.logger.warn("signalwire_webhook_unknown_event_type", { eventType });
+          this.logger.warn("signalwire_webhook_unknown_event_type");
           return null;
       }
 
       // Extract custom parameters (organizationId, agentId, etc.)
-      let metadata: Record<string, string | number | boolean | null> = {};
-      if (payload.custom_parameters) {
+      const metadata: Record<string, string | number | boolean | null> = {};
+      if (typeof payload.custom_parameters === "string" && payload.custom_parameters.length <= 4_000) {
         try {
-          metadata = JSON.parse(payload.custom_parameters);
-        } catch (error) {
-          this.logger.warn("signalwire_webhook_invalid_custom_parameters", {
-            custom_parameters: payload.custom_parameters,
-          });
+          const custom = JSON.parse(payload.custom_parameters) as Record<string, unknown>;
+          if (typeof custom.organizationId === "string" && /^[A-Za-z0-9_.:-]{4,64}$/.test(custom.organizationId)) {
+            metadata.organizationId = custom.organizationId;
+          }
+          if (typeof custom.agentId === "string" && /^[A-Za-z0-9_.:-]{4,64}$/.test(custom.agentId)) {
+            metadata.agentId = custom.agentId;
+          }
+          if (custom.language === "en" || custom.language === "ar" || custom.language === "jo") {
+            metadata.language = custom.language;
+          }
+        } catch {
+          this.logger.warn("signalwire_webhook_invalid_custom_parameters");
         }
       }
 
-      // Add call-specific metadata
-      if (payload.duration !== undefined) {
-        metadata.duration = payload.duration;
+      if (typeof payload.duration === "number" && Number.isFinite(payload.duration)) {
+        metadata.duration = Math.min(86_400, Math.max(0, Math.trunc(payload.duration)));
       }
-      if (payload.direction) {
+      if (payload.direction === "inbound" || payload.direction === "outbound") {
         metadata.direction = payload.direction;
       }
 
@@ -352,25 +382,16 @@ export class SignalWireProvider implements TelephonyProvider {
         providerEventId: payload.id,
         eventType: telephonyEventType,
         providerCallId: payload.id,
-        fromNumber: payload.from || null,
-        toNumber: payload.to || null,
+        fromNumber: typeof payload.from === "string" && /^\+?[0-9]{6,20}$/.test(payload.from) ? payload.from : null,
+        toNumber: typeof payload.to === "string" && /^\+?[0-9]{6,20}$/.test(payload.to) ? payload.to : null,
         metadata,
         occurredAt: new Date().toISOString(),
       };
 
-      this.logger.debug("signalwire_webhook_normalized", {
-        providerEventId: telephonyEvent.providerEventId,
-        eventType: telephonyEvent.eventType,
-        from: telephonyEvent.fromNumber,
-        to: telephonyEvent.toNumber,
-      });
-
+      this.logger.debug("signalwire_webhook_normalized", { eventType: telephonyEvent.eventType });
       return telephonyEvent;
-    } catch (error) {
-      this.logger.error("signalwire_webhook_normalization_error", {
-        error: error instanceof Error ? error.message : String(error),
-        payload: webhookPayload,
-      });
+    } catch {
+      this.logger.error("signalwire_webhook_normalization_error", { reason: "invalid_provider_payload" });
       return null;
     }
   }

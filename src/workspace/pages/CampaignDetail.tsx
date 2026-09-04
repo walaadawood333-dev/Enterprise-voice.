@@ -1,3 +1,4 @@
+import { apiFetch } from "@/api";
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, Users, PhoneCall, Calendar, CheckCircle, XCircle, Clock, Edit2, Trash2 } from "lucide-react";
@@ -32,7 +33,7 @@ export function CampaignDetail() {
 
   useEffect(() => {
     if (!campaignId) return;
-    fetch(`/api/workspace/campaigns/${campaignId}`)
+    apiFetch(`/api/workspace/campaigns/${campaignId}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
       .then(setCampaign)
       .catch(() => setError(true));
@@ -41,7 +42,7 @@ export function CampaignDetail() {
   const handleUpdateStatus = async (newStatus: Campaign["status"]) => {
     if (!campaignId) return;
     try {
-      const res = await fetch(`/api/workspace/campaigns/${campaignId}`, {
+      const res = await apiFetch(`/api/workspace/campaigns/${campaignId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: newStatus }),
@@ -58,7 +59,7 @@ export function CampaignDetail() {
   const handleDelete = async () => {
     if (!campaignId || !confirm("Are you sure you want to delete this campaign?")) return;
     try {
-      const res = await fetch(`/api/workspace/campaigns/${campaignId}`, {
+      const res = await apiFetch(`/api/workspace/campaigns/${campaignId}`, {
         method: "DELETE",
       });
       if (res.ok) {
@@ -338,7 +339,7 @@ function EditCampaignModal({
   const handleSubmit = async () => {
     setSubmitting(true);
     try {
-      const res = await fetch(`/api/workspace/campaigns/${campaign.id}`, {
+      const res = await apiFetch(`/api/workspace/campaigns/${campaign.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

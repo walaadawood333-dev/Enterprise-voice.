@@ -24,7 +24,7 @@ import type {
   OrganizationEntitlementRow,
   OrganizationLimits,
   OrganizationRow,
-  OrgRole,
+  UserRole,
   PlanRow,
   SubscriptionRow,
   AuditEventRow,
@@ -83,7 +83,7 @@ const toUser = (row: Record<string, unknown> | null): UserRow | undefined =>
         organizationId: str(row, "organizationId"),
         email: str(row, "email"),
         name: str(row, "name"),
-        role: lower(row.role) as OrgRole,
+        role: lower(row.role) as UserRole,
         status: lower(row.status) as UserRow["status"],
         createdAt: iso(row, "createdAt"),
         updatedAt: iso(row, "updatedAt"),
@@ -451,7 +451,7 @@ export async function createPrismaDb(options: PrismaDbOptions = {}): Promise<Db>
         return {
           userId: str(row, "id"),
           organizationId: str(row, "organizationId"),
-          role: lower(row.role) as OrgRole,
+          role: lower(row.role) as UserRole,
           status: lower(row.status) as UserCredential["status"],
           passwordHash: hash,
         };
@@ -468,6 +468,16 @@ export async function createPrismaDb(options: PrismaDbOptions = {}): Promise<Db>
             },
           })
         )!,
+      update: async (organizationId, userId, patch) => {
+        const data: Record<string, unknown> = { updatedAt: new Date() };
+        if (patch.name !== undefined) data.name = patch.name;
+        if (patch.role !== undefined) data.role = upper(patch.role);
+        if (patch.status !== undefined) data.status = upper(patch.status);
+        const result = await user.updateMany({ where: { id: userId, organizationId }, data });
+        return result.count
+          ? toUser(await user.findFirst({ where: { id: userId, organizationId } }))
+          : undefined;
+      },
       setPassword: async (userId, passwordHash) => {
         await user.update({ where: { id: userId }, data: { passwordHash, updatedAt: new Date() } });
       },

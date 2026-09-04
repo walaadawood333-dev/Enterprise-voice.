@@ -1,3 +1,4 @@
+import { apiFetch } from "@/api";
 import { useEffect, useMemo, useState } from "react";
 import { Check, Loader2, Plus, Save, X } from "lucide-react";
 
@@ -27,7 +28,7 @@ const emptyPlan: Omit<Plan, "id"> = {
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
+  const response = await apiFetch(path, {
     ...init,
     credentials: "include",
     headers: { "content-type": "application/json", ...(init?.headers ?? {}) },

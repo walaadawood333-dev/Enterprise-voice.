@@ -22,17 +22,11 @@ import type {
   CallOutcomeType,
   CampaignContactPhase12Row,
   CampaignEventType12,
-  CampaignRow,
   ContactImportInput,
   ContactImportResult,
-  ContactRow,
-  ContactValidationStatus,
-  DialingQueueItemStatus,
   DialingQueueStats,
   CampaignExecutionMetrics,
   PhoneNormalizationResult,
-  PhoneValidationStatus,
-  RetryBackoffStrategy,
 } from "../../shared/contracts";
 import type { Db } from "../db/store";
 
@@ -226,21 +220,7 @@ const DEFAULT_RETRY_DELAYS: Record<string, number> = {
   VOICEMAIL: 86400, // 24 hours
 };
 
-const DEFAULT_RETRY_ACTIONS: Record<string, string> = {
-  ANSWERED: "stop",
-  COMPLETED: "stop",
-  PROMISE_TO_PAY: "stop",
-  PAYMENT_CONFIRMED: "stop",
-  REFUSED: "stop",
-  NO_ANSWER: "retry",
-  BUSY: "retry",
-  FAILED: "retry",
-  VOICEMAIL: "retry",
-  CALLBACK_REQUESTED: "callback",
-  WRONG_NUMBER: "stop",
-  DNC_REQUEST: "suppress",
-  DISPUTE: "escalate",
-};
+
 
 // ─── Service Factory ────────────────────────────────────────────────────
 
@@ -366,6 +346,9 @@ export function createCampaignExecutionService(deps: {
             contactId: contact.id,
             priority: input.priority ?? 0,
             maxAttempts: 3,
+            scheduledAt: null,
+            blockedReason: null,
+            callbackAt: null,
             customData: input.customFields ?? {},
           });
 
@@ -406,6 +389,9 @@ export function createCampaignExecutionService(deps: {
           contactId: contact.id,
           priority: input.priority ?? 0,
           maxAttempts: 3,
+          scheduledAt: null,
+          blockedReason: null,
+          callbackAt: null,
           customData: input.customFields ?? {},
         });
 

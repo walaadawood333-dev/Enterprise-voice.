@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { ArrowLeft, ArrowRight, CircleCheck, Loader2, ShieldCheck } from "lucide-react";
 import { VoiceBars } from "@/components/ui/VoiceBars";
 import { api } from "@/api";
-import { login, register, useAuth } from "@/hooks/useAuth";
+import { authenticatedHome, isPlatformRole, login, register, useAuth } from "@/hooks/useAuth";
 import { cn } from "@/utils/cn";
 
 type Mode = "login" | "register";
@@ -29,14 +29,17 @@ export function AuthScreen({ mode }: { mode: Mode }) {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    if (mode === "register") void refresh(false);
+    void refresh(false);
   }, [mode, refresh]);
 
   const requestedDestination = (location.state as { from?: string } | null)?.from;
-  const authenticatedDestination =
-    requestedDestination?.startsWith("/studio") || requestedDestination?.startsWith("/workspace")
-      ? requestedDestination
-      : "/studio/overview";
+  const authenticatedDestination = session
+    ? isPlatformRole(session.role)
+      ? requestedDestination?.startsWith("/admin") ? requestedDestination : authenticatedHome(session)
+      : requestedDestination?.startsWith("/workspace") || requestedDestination?.startsWith("/studio")
+        ? requestedDestination
+        : authenticatedHome(session)
+    : "/workspace/overview";
 
   useEffect(() => {
     if (session) navigate(authenticatedDestination, { replace: true });
@@ -90,7 +93,8 @@ export function AuthScreen({ mode }: { mode: Mode }) {
             organizationName: form.organizationName.trim(),
           });
     setSubmitting(false);
-    if (ok) navigate(authenticatedDestination, { replace: true });
+    // Successful auth updates the central session store; the effect above chooses the role-safe app.
+    if (!ok) return;
   };
 
   const serverError = error;

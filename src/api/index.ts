@@ -310,7 +310,7 @@ async function callHttp<T>(
         code: aborted ? "TIMEOUT" : "NETWORK_ERROR",
         message: aborted
           ? "The API did not respond in time."
-          : "The API could not be reached. Falling back to local demo mode.",
+          : "The configured API could not be reached.",
       },
     };
   } finally {
@@ -351,10 +351,13 @@ export function createApiClient(): ApiClient {
         ? run<{ sessionId: string }>("POST", "/api/voice/realtime/end", input)
         : fetch(`${API_BASE_URL}/api/voice/realtime/end`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+              "Content-Type": "application/json",
+              ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+            },
             body: JSON.stringify(input),
             keepalive: true,
-            credentials: "omit",
+            credentials: "include",
           })
             .then(
               (res) =>
@@ -482,6 +485,40 @@ export function createApiClient(): ApiClient {
 }
 
 export const api = createApiClient();
+
+/**
+ * Fetch-compatible bridge for feature pages. It preserves cookie/bearer authentication in hosted
+ * mode and executes the same authenticated route handlers in the browser-only demo transport.
+ */
+export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const method = String(init.method ?? "GET").toUpperCase() as "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
+  if (api.transport === "http") {
+    const headers = new Headers(init.headers);
+    if (init.body !== undefined && !headers.has("content-type")) headers.set("content-type", "application/json");
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+    if (sessionToken) headers.set("authorization", `Bearer ${sessionToken}`);
+    return fetch(`${API_BASE_URL}${path}`, { ...init, method, headers, credentials: "include" });
+  }
+
+  let body: unknown = undefined;
+  if (typeof init.body === "string" && init.body.length > 0) {
+    try {
+      body = JSON.parse(init.body);
+    } catch {
+      body = init.body;
+    }
+  } else if (init.body !== undefined && init.body !== null) {
+    body = init.body;
+  }
+  const [pathname, search = ""] = path.split("?");
+  const result = await callLocal<unknown>({ method, path: pathname, query: parseQuery(search), body });
+  const payload = result.ok ? result.data : { error: result.error };
+  return new Response(JSON.stringify(payload), {
+    status: result.ok ? 200 : result.error.code === "UNAUTHENTICATED" ? 401 : result.error.code === "FORBIDDEN" ? 403 : 400,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
 export { API_VERSION, DEMO_AGENT_ID };
 
 /* ── voice mode resolution (the only place that decides demo vs production) ── */

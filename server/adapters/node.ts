@@ -10,12 +10,13 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readRealtimeSecrets } from "../config/secrets";
 import { resolveEnv, validateStartupConfig } from "../config/env";
-import { createLogger } from "../lib/observability";
+import { ApiError, createLogger, toApiError } from "../lib/observability";
 import { createApp } from "../http/router";
-import { createFetchHandler } from "../http/middleware";
+import { authorize, createFetchHandler, hashKey, isAllowedOrigin } from "../http/middleware";
 import { createProductionAuth } from "../http/auth/production";
 import { createDemoAuth } from "../http/auth/demo";
 import { createMemoryDb } from "../db/store";
+import { asObject, optionalString, requireString } from "../../shared/validate";
 
 const env = resolveEnv();
 const logger = createLogger(env.logLevel);
@@ -90,17 +91,21 @@ async function buildApp() {
 const readBody = (req: IncomingMessage): Promise<string> =>
   new Promise((resolve, reject) => {
     let data = "";
+    let bytes = 0;
+    let tooLarge = false;
     req.setEncoding("utf8");
     req.on("data", (chunk: string) => {
-      data += chunk;
-      if (data.length > env.maxBodyBytes) {
-        reject(new Error("BODY_TOO_LARGE"));
-        req.destroy();
+      bytes += Buffer.byteLength(chunk, "utf8");
+      if (bytes > env.maxBodyBytes) {
+        tooLarge = true;
         return;
       }
+      data += chunk;
     });
     req.on("error", reject);
-    req.on("end", () => resolve(data));
+    req.on("end", () => tooLarge
+      ? reject(new ApiError("BAD_REQUEST", "Request body is too large.", { status: 413 }))
+      : resolve(data));
   });
 
 void (async () => {
@@ -128,36 +133,68 @@ void (async () => {
         /^\/api\/voice\/sessions\/([A-Za-z0-9_.:-]{4,64})\/stream$/
       );
       if (streamMatch && method === "POST") {
-        const ctx = await app.authenticate({
-          authorization: typeof req.headers.authorization === "string" ? req.headers.authorization : "",
-          cookie: typeof req.headers.cookie === "string" ? req.headers.cookie : "",
-        });
-        if (!ctx) {
-          respond(res, 401, { error: { code: "UNAUTHENTICATED", message: "Sign in to stream a turn." } }, started);
-          return;
-        }
-        const rawBody = await readBody(req);
-        const parsed = rawBody ? (JSON.parse(rawBody) as Record<string, unknown>) : {};
-        res.writeHead(200, {
-          "content-type": "text/event-stream; charset=utf-8",
-          "cache-control": "no-store, no-transform",
-          connection: "keep-alive",
-          "x-accel-buffering": "no",
-        });
         try {
-          for await (const frame of app.voiceEngine.streamTurn({
-            organizationId: ctx.organizationId,
-            sessionId: streamMatch[1],
-            text: String(parsed.text ?? ""),
-            turnId: typeof parsed.turnId === "string" ? parsed.turnId : undefined,
-          })) {
-            res.write(`event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`);
+          const cookie = typeof req.headers.cookie === "string" ? req.headers.cookie : "";
+          const origin = typeof req.headers.origin === "string" ? req.headers.origin : "";
+          if (cookie && !isAllowedOrigin(env, origin)) {
+            throw new ApiError("FORBIDDEN", "Request origin is not allowed.");
           }
+          if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+            throw new ApiError("BAD_REQUEST", "Content-Type must be application/json.", { status: 415 });
+          }
+          const decision = app.limiter.take(hashKey(req.socket.remoteAddress ?? "unknown"));
+          if (!decision.allowed) {
+            res.setHeader("retry-after", String(Math.max(1, Math.ceil(decision.resetInMs / 1_000))));
+            throw new ApiError("RATE_LIMITED", "Too many requests.");
+          }
+          const ctx = await app.authenticate({
+            authorization: typeof req.headers.authorization === "string" ? req.headers.authorization : "",
+            cookie,
+          });
+          if (!ctx) throw new ApiError("UNAUTHENTICATED", "Sign in to stream a turn.");
+          authorize(ctx, ["owner", "admin", "manager", "operator"]);
+
+          const rawBody = await readBody(req);
+          let parsed: Record<string, unknown>;
+          try {
+            parsed = asObject(rawBody ? JSON.parse(rawBody) : {});
+          } catch (error) {
+            if (error instanceof ApiError) throw error;
+            throw new ApiError("VALIDATION_ERROR", "Request body must be valid JSON.");
+          }
+          const text = requireString(parsed, "text", { max: 4_000 });
+          const turnId = optionalString(parsed, "turnId", 64);
+          res.writeHead(200, {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-store, no-transform",
+            connection: "keep-alive",
+            "x-accel-buffering": "no",
+            "x-content-type-options": "nosniff",
+            "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
+          });
+          try {
+            for await (const frame of app.voiceEngine.streamTurn({
+              organizationId: ctx.organizationId,
+              sessionId: streamMatch[1],
+              text,
+              turnId,
+            })) {
+              res.write(`event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`);
+            }
+          } catch (error) {
+            const safe = toApiError(error, logger, { endpoint: "voice_stream" });
+            res.write(`event: error\ndata: ${JSON.stringify({
+              type: "error",
+              error: safe.toPublicBody().error.message,
+              code: safe.code,
+            })}\n\n`);
+          }
+          res.end();
         } catch (error) {
-          const message = (error as Error)?.message?.slice(0, 160) ?? "stream_failed";
-          res.write(`event: error\ndata: ${JSON.stringify({ type: "error", error: message })}\n\n`);
+          const safe = toApiError(error, logger, { endpoint: "voice_stream_setup" });
+          if (!res.headersSent) respond(res, safe.status, safe.toPublicBody(), started);
+          else res.end();
         }
-        res.end();
         return;
       }
 
@@ -166,6 +203,8 @@ void (async () => {
         if (typeof value === "string") headers.set(key, value);
         else if (Array.isArray(value)) headers.set(key, value.join(", "));
       }
+      // This adapter is the trust boundary. Never accept a client-supplied forwarding chain.
+      headers.set("x-forwarded-for", req.socket.remoteAddress ?? "unknown");
 
       const body = method === "GET" || method === "HEAD" ? undefined : await readBody(req);
       const response = await fetchHandler(
@@ -179,8 +218,8 @@ void (async () => {
       const text = await response.text();
       respond(res, response.status, text, started, Object.fromEntries(response.headers.entries()));
     } catch (error) {
-      logger.error("node_adapter_failure", { reason: (error as Error)?.message?.slice(0, 200) });
-      respond(res, 500, { error: { code: "INTERNAL_ERROR", message: "Unexpected server error." } }, started);
+      const safe = toApiError(error, logger, { endpoint: "node_adapter" });
+      respond(res, safe.status, safe.toPublicBody(), started);
     }
   });
 
@@ -194,6 +233,11 @@ void (async () => {
     const body = typeof payload === "string" ? payload : JSON.stringify(payload);
     res.writeHead(status, {
       "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+      "referrer-policy": "no-referrer",
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
       "x-response-time-ms": String(Date.now() - started),
       ...extraHeaders,
     });

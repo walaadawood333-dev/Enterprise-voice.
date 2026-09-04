@@ -1,3 +1,4 @@
+import { apiFetch } from "@/api";
 import { useEffect, useState } from "react";
 import { Cable, Loader2, Phone, Power, RefreshCw, ShieldCheck, TestTube2 } from "lucide-react";
 import type {
@@ -17,7 +18,7 @@ const tones: Record<ControlCenterStatus, string> = {
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
+  const response = await apiFetch(path, {
     ...init,
     credentials: "include",
     headers: { "content-type": "application/json", ...(init?.headers ?? {}) },

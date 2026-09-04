@@ -7,11 +7,13 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "npm run test:saas && npm run test:white-label && npm run test:control-center && npm run test:usage-billing",
+    "test": "npm run test:saas && npm run test:white-label && npm run test:control-center && npm run test:usage-billing && npm run test:security && npm run test:activation",
     "test:saas": "tsx server/__tests__/saas-control-plane-verification.ts",
     "test:white-label": "tsx server/__tests__/white-label-verification.ts",
     "test:control-center": "tsx server/__tests__/prompt15-verification.ts",
-    "test:usage-billing": "tsx server/__tests__/prompt16-verification.ts"
+    "test:usage-billing": "tsx server/__tests__/prompt16-verification.ts",
+    "test:security": "tsx server/__tests__/prompt17-security-verification.ts",
+    "test:activation": "tsx server/__tests__/prompt18-application-activation.ts"
   },
   "dependencies": {
     "@prisma/client": "^7.10.0",

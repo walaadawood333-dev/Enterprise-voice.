@@ -739,6 +739,11 @@ export function createConnectorService(deps: {
 
     async updateMapping(organizationId, connectorId, mappingId, patch) {
       await checkEntitlement(organizationId);
+      const [connector, existing] = await Promise.all([
+        db.connectors.get(connectorId, organizationId),
+        db.connectorMappings.get(mappingId, organizationId),
+      ]);
+      if (!connector || !existing || existing.connectorId !== connectorId) return undefined;
 
       // Build update object, only including defined fields
       const updateData: any = {};

@@ -1,8 +1,8 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { ErrorBoundary } from "@/components";
 import { UIProvider } from "@/context/UIProvider";
-import { PublicSite } from "@/site/PublicSite";
 import { LoginPage, RegisterPage } from "@/auth/AuthScreen";
+import { GuestOnly, PublicEntry } from "@/auth/RouteGuards";
 import { StudioApp } from "@/studio/StudioApp";
 import { AdminApp } from "@/admin/AdminApp";
 import { WorkspaceApp } from "@/workspace/WorkspaceApp";
@@ -22,9 +22,9 @@ export default function App() {
     <UIProvider>
       <BrowserRouter>
         <Routes>
-          <Route path="/" element={<PublicSite />} />
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/register" element={<RegisterPage />} />
+          <Route path="/" element={<PublicEntry />} />
+          <Route path="/login" element={<GuestOnly><LoginPage /></GuestOnly>} />
+          <Route path="/register" element={<GuestOnly><RegisterPage /></GuestOnly>} />
           <Route
             path="/studio/*"
             element={

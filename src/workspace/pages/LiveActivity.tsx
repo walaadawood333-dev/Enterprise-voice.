@@ -1,3 +1,4 @@
+import { apiFetch } from "@/api";
 import { useEffect, useState } from "react";
 import { Activity, RefreshCw } from "lucide-react";
 
@@ -26,7 +27,7 @@ export function LiveActivity() {
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
 
   const fetchSessions = () => {
-    fetch("/api/workspace/live")
+    apiFetch("/api/workspace/live")
       .then((r) => (r.ok ? r.json() : []))
       .then((data) => {
         setSessions(data);

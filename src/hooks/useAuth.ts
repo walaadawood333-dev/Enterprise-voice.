@@ -4,6 +4,11 @@ import type { AuthSessionDto } from "../../shared/contracts";
 
 export type AuthStatus = "unknown" | "checking" | "authenticated" | "anonymous";
 
+const PLATFORM_ROLES = new Set(["super_admin", "platform_admin", "platform_operator"]);
+export const isPlatformRole = (role?: string | null) => Boolean(role && PLATFORM_ROLES.has(role));
+export const authenticatedHome = (session: AuthSessionDto) =>
+  isPlatformRole(session.role) ? "/admin/overview" : "/workspace/overview";
+
 interface AuthStore {
   status: AuthStatus;
   session: AuthSessionDto | null;
@@ -54,7 +59,7 @@ export function refreshSession(force = false): Promise<void> {
         status: "anonymous",
         session: null,
         error: unreachable
-          ? "We could not reach the CenterAI API. You can still explore the demo workspace."
+          ? "We could not reach the CenterAI API. You can still explore the public demo."
           : null,
       });
     }
@@ -88,6 +93,9 @@ export async function register(input: {
   if (!result.ok) {
     publish({ busy: false, error: result.error.message, fields: result.error.fields ?? {} });
     return false;
+  }
+  if ("bearerToken" in result.data && typeof result.data.bearerToken === "string") {
+    setSessionToken(result.data.bearerToken);
   }
   publish({ status: "authenticated", session: result.data.session, busy: false, error: null });
   // The workspace now has a real owner; refresh so the studio shows the freshly issued session.
