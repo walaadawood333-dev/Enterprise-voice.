@@ -14,7 +14,6 @@
 import type {
   OrganizationTelephonyProviderDto,
   OrganizationTelephonyProviderRow,
-  ProviderRegistryState,
 } from "../../shared/contracts";
 import type { Db } from "../db/store";
 import { newId } from "../db/store";

@@ -86,9 +86,6 @@ export {
   ProductionTelephonyProviderBase,
   type ProductionProviderConfig,
   type ProviderHealthCheckResult,
-  // SignalWire provider
-  SignalWireProvider,
-  type SignalWireConfig,
   // Event normalization
   normalizeProviderEvent,
   normalizeProviderEvents,

@@ -56,6 +56,7 @@ import {
   type StreamChunk,
 } from "../providers/voiceEngine";
 import type { ServerEnv } from "../config/env";
+import type { EntitlementEngine } from "./entitlements";
 import type { RealtimeSecrets as VoiceSecrets } from "../config/secrets";
 
 const MAX_INPUT = 1200;
@@ -103,11 +104,12 @@ export function createVoiceOrchestrator(input: {
   env: ServerEnv;
   logger: Logger;
   secrets: VoiceSecrets;
+  entitlements: EntitlementEngine;
   provider?: AIConversationProvider;
   /** Adapters that can flush frames incrementally set this true. */
   streamingCapable?: boolean;
 }) {
-  const { db, env, logger, secrets } = input;
+  const { db, env, logger, secrets, entitlements } = input;
   const streamingCapable = input.streamingCapable === true;
 
   const openAiProvider = new OpenAIConversationProvider({
@@ -169,6 +171,11 @@ export function createVoiceOrchestrator(input: {
       sessions.set(session.id, runtime);
     }
     return runtime;
+  };
+
+  const assertVoiceAccess = async (organizationId: string) => {
+    await entitlements.assertFeature(organizationId, "voice_calls");
+    await entitlements.assertCurrentLimit(organizationId, "maxMonthlyMinutes");
   };
 
   const loadAgent = async (organizationId: string, agentId: string): Promise<AgentRow> => {
@@ -341,6 +348,7 @@ export function createVoiceOrchestrator(input: {
       /** Reuse an open session for the same agent instead of creating a duplicate. */
       resume?: boolean;
     }): Promise<CreateVoiceSessionResponse> {
+      await assertVoiceAccess(args.organizationId);
       const agent = await loadAgent(args.organizationId, args.agentId);
       const testModeRequested = args.testMode === true;
 
@@ -469,6 +477,7 @@ export function createVoiceOrchestrator(input: {
       text: string;
       turnId?: string;
     }): Promise<VoiceInputResponse> {
+      await assertVoiceAccess(args.organizationId);
       const session = await getScoped(args.sessionId, args.organizationId);
       const agent = await loadAgent(args.organizationId, session.agentId);
       const runtime = runtimeFor(session);
@@ -580,6 +589,7 @@ export function createVoiceOrchestrator(input: {
       text: string;
       turnId?: string;
     }): AsyncGenerator<VoiceStreamFrame, void, undefined> {
+      await assertVoiceAccess(args.organizationId);
       const session = await getScoped(args.sessionId, args.organizationId);
       const agent = await loadAgent(args.organizationId, session.agentId);
       const runtime = runtimeFor(session);

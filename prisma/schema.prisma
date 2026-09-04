@@ -28,6 +28,9 @@ enum UserRole {
   MANAGER
   OPERATOR
   VIEWER
+  SUPER_ADMIN
+  PLATFORM_ADMIN
+  PLATFORM_OPERATOR
 }
 
 enum UserStatus {
@@ -88,6 +91,8 @@ enum UsageEventType {
   AUDIO_SECONDS
   INPUT_MESSAGES
   OUTPUT_MESSAGES
+  TURN_TELEMETRY
+  PROVIDER_FALLBACK
   SESSION_STARTED
   SESSION_ENDED
   SESSION_COMPLETED
@@ -109,6 +114,7 @@ model Organization {
   calls               Call[]
   telephonyProviders  OrganizationTelephonyProvider[]
   subscription        Subscription?
+  entitlements        OrganizationEntitlement[]
   branding            OrganizationBranding?
   campaigns           Campaign[]
   compliancePolicies  CompliancePolicy[]
@@ -341,11 +347,10 @@ model OrganizationTelephonyProvider {
 
 // ─── Phase 10A — Subscription & Entitlement Architecture ──────────────────
 
-enum PlanType {
-  STARTER
-  PROFESSIONAL
-  ENTERPRISE
-  CUSTOM
+enum PlanStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
 }
 
 enum SubscriptionStatus {
@@ -357,44 +362,58 @@ enum SubscriptionStatus {
 }
 
 model Plan {
-  id          String   @id @default(cuid())
-  name        String
-  planType    PlanType @map("plan_type")
-  /// JSON array of feature entitlements
-  features    Json     @default("[]")
-  /// JSON object of limit overrides
-  limits      Json     @default("{}")
-  /// Monthly price in cents (0 for custom/trial)
-  priceCents  Int      @default(0) @map("price_cents")
-  /// Billing interval
-  interval    String   @default("month")
-  isActive    Boolean  @default(true) @map("is_active")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  id          String     @id @default(cuid())
+  name        String     @unique
+  status      PlanStatus @default(DRAFT)
+  /// JSON array validated against the server-side feature registry.
+  features    Json       @default("[]")
+  /// JSON object validated against the server-side limit registry.
+  limits      Json       @default("{}")
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
 
   subscriptions Subscription[]
 
+  @@index([status])
   @@map("plans")
 }
 
 model Subscription {
-  id              String             @id @default(cuid())
-  organizationId  String             @unique @map("organization_id")
-  planId          String             @map("plan_id")
-  status          SubscriptionStatus @default(TRIAL)
-  /// Effective limits override plan defaults (JSON object)
-  effectiveLimits Json?              @map("effective_limits")
-  trialEndsAt     DateTime?          @map("trial_ends_at")
-  currentPeriodStart DateTime?       @map("current_period_start")
-  currentPeriodEnd   DateTime?       @map("current_period_end")
-  cancelledAt     DateTime?          @map("cancelled_at")
-  createdAt       DateTime           @default(now()) @map("created_at")
-  updatedAt       DateTime           @updatedAt @map("updated_at")
+  id                 String             @id @default(cuid())
+  organizationId     String             @unique @map("organization_id")
+  planId             String             @map("plan_id")
+  status             SubscriptionStatus @default(TRIAL)
+  /// Explicit tenant limit overrides; absent keys inherit the plan value.
+  effectiveLimits    Json?              @map("effective_limits")
+  trialEndsAt        DateTime?          @map("trial_ends_at")
+  currentPeriodStart DateTime?          @map("current_period_start")
+  currentPeriodEnd   DateTime?          @map("current_period_end")
+  cancelledAt        DateTime?          @map("cancelled_at")
+  startedAt          DateTime           @default(now()) @map("started_at")
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @updatedAt @map("updated_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   plan         Plan         @relation(fields: [planId], references: [id], onDelete: Restrict)
 
+  @@index([planId, status])
   @@map("subscriptions")
+}
+
+model OrganizationEntitlement {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  feature        String
+  enabled        Boolean
+  reason         String?
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, feature])
+  @@index([organizationId, enabled])
+  @@map("organization_entitlements")
 }
 
 model OrganizationBranding {
@@ -402,6 +421,7 @@ model OrganizationBranding {
   organizationId  String   @unique @map("organization_id")
   displayName     String?  @map("display_name")
   logoUrl         String?  @map("logo_url")
+  faviconUrl      String?  @map("favicon_url")
   primaryColor    String   @default("#000000") @map("primary_color")
   accentColor     String   @default("#3b82f6") @map("accent_color")
   theme           String   @default("light")
@@ -419,6 +439,9 @@ enum AuditAction {
   ORGANIZATION_UPDATED
   SUBSCRIPTION_CREATED
   SUBSCRIPTION_CHANGED
+  PLAN_CREATED
+  PLAN_CHANGED
+  ENTITLEMENT_CHANGED
   FEATURE_ENABLED
   FEATURE_DISABLED
   LIMIT_CHANGED

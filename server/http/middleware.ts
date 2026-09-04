@@ -6,11 +6,13 @@
 
 import {
   API_ERROR_CODES,
+  ROLES,
   type ApiErrorCode,
   type ApiErrorBody,
   type ApiResponse,
   type OrgRole,
   type RequestContext,
+  type UserRole,
 } from "../../shared/contracts";
 import type { ServerEnv } from "../config/env";
 import type { Db } from "../db/store";
@@ -38,8 +40,16 @@ export function createRateLimiter(options: { windowMs: number; max: number }): R
       const bucket = buckets.get(key);
       if (!bucket || bucket.resetAt <= now) {
         buckets.set(key, { count: 1, resetAt: now + options.windowMs });
-        if (buckets.size > 5_000) sweep();
-        return { allowed: true, remaining: options.max - 1, resetInMs: options.windowMs };
+        if (buckets.size > 5_000) {
+          sweep();
+          // Spoofed high-cardinality keys must not grow memory without bound.
+          while (buckets.size > 5_000) {
+            const oldest = buckets.keys().next().value as string | undefined;
+            if (!oldest) break;
+            buckets.delete(oldest);
+          }
+        }
+        return { allowed: true, remaining: Math.max(0, options.max - 1), resetInMs: options.windowMs };
       }
       bucket.count += 1;
       const resetInMs = Math.max(0, bucket.resetAt - now);
@@ -54,25 +64,46 @@ export function createRateLimiter(options: { windowMs: number; max: number }): R
 
 /* ── CORS ───────────────────────────────────────────────────────────── */
 
+export function isAllowedOrigin(env: ServerEnv, origin: string): boolean {
+  try {
+    const normalized = new URL(origin).origin;
+    return (
+      normalized === origin &&
+      (env.corsOrigins.includes(origin) ||
+        sameOrigin(env.appUrl, origin) ||
+        (env.appMode === "demo" && env.corsOrigins.includes("*")))
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function corsHeadersFor(env: ServerEnv, origin?: string | null): Record<string, string> {
   const headers: Record<string, string> = {
     vary: "Origin",
     "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
     "referrer-policy": "no-referrer",
     "permissions-policy": "microphone=(), camera=(), geolocation=()",
+    "cross-origin-resource-policy": "same-origin",
+    "content-security-policy": "default-src 'none'; base-uri 'none'; frame-ancestors 'none'",
   };
-  if (!origin) return headers;
-  const allowed =
-    env.corsOrigins.includes("*") || env.corsOrigins.includes(origin) || sameOrigin(env.appUrl, origin);
-  if (!allowed) return headers;
+  if (env.appMode === "production" && env.appUrl.startsWith("https://")) {
+    headers["strict-transport-security"] = "max-age=31536000; includeSubDomains";
+  }
+  if (!origin || !isAllowedOrigin(env, origin)) return headers;
   headers["access-control-allow-origin"] = origin;
   headers["access-control-vary"] = "Origin";
+  // Wildcard demo origins never receive credentialed CORS. Explicit and same-origin entries do.
+  if (env.corsOrigins.includes(origin) || sameOrigin(env.appUrl, origin)) {
+    headers["access-control-allow-credentials"] = "true";
+  }
   return headers;
 }
 
-function sameOrigin(appUrl: string, origin: string) {
+function sameOrigin(left: string, right: string) {
   try {
-    return new URL(appUrl).origin === new URL(origin).origin;
+    return new URL(left).origin === new URL(right).origin;
   } catch {
     return false;
   }
@@ -80,28 +111,22 @@ function sameOrigin(appUrl: string, origin: string) {
 
 export const preflightHeaders = (env: ServerEnv, origin?: string | null): Record<string, string> => ({
   ...corsHeadersFor(env, origin),
-  "access-control-allow-methods": "GET,POST,PATCH,OPTIONS",
+  "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
   "access-control-allow-headers": "content-type,authorization,x-request-id",
   "access-control-max-age": "600",
 });
 
 /* ── Authentication / authorization (ready, not production auth) ────── */
 
-/**
- * With CENTERAI_AUTH_SECRET unset the API answers as the seeded demo organization — clearly
- * labelled, never presented as real authentication. With it set, a bearer token is required;
- * token verification is delegated to `verifyBearer` which must be wired to the real IdP later.
- */
+/** Identity dependencies. Demo and production both require an issued session for tenant routes. */
 export interface AuthenticateDeps {
-  /** Only consulted in Demo Mode, where there is no browser cookie jar to authenticate. */
-  demoOrganizationId: string;
   users: Db["users"];
+  organizations: Db["organizations"];
   broker?: AuthBroker;
 }
 
 /**
- * Identity resolution. Priority: bearer token → session cookie → (Demo Mode only) the seeded
- * workspace owner.
+ * Identity resolution. Priority: bearer token → session cookie. There is no implicit tenant.
  *
  * Isolation rule: the organizationId on the returned context comes from the *user row*, never
  * from the token payload, a header or the request body. A forged tenant id therefore does nothing.
@@ -125,6 +150,10 @@ export async function authenticate(
     if (!user || user.status !== "active") {
       throw new ApiError("ACCOUNT_DISABLED", "This account cannot access the workspace.");
     }
+    const organization = await deps.organizations.get(user.organizationId);
+    if (!organization || organization.status === "suspended") {
+      throw new ApiError("ACCOUNT_DISABLED", "This workspace is suspended or unavailable.");
+    }
     return {
       organizationId: user.organizationId,
       userId: user.id,
@@ -144,28 +173,20 @@ export async function authenticate(
     );
   }
 
-  if (env.appMode === "demo" && env.auth.mode !== "bearer") {
-    const members = await deps.users.listByOrg(deps.demoOrganizationId);
-    const owner = members.find((user) => user.role === "owner") ?? members[0];
-    return {
-      organizationId: deps.demoOrganizationId,
-      userId: owner?.id ?? null,
-      role: owner?.role ?? "owner",
-      authMode: "demo",
-      tokenPresented: false,
-      at,
-    };
-  }
-
+  // Demo Mode changes provider wiring, never authentication. A user must still register or log in
+  // to receive a short-lived in-memory demo token before any tenant route is served.
   throw new ApiError("UNAUTHENTICATED", "Sign in to open your workspace.");
 }
 
 const RANK: Record<OrgRole, number> = { owner: 40, admin: 30, manager: 20, operator: 10, viewer: 0 };
 
-/** Authorization gate. In Demo Mode there is one seeded tenant, so nothing to escalate against. */
-export function authorize(ctx: { role: OrgRole; authMode: string }, allowed: OrgRole[]): void {
-  if (ctx.authMode === "demo") return;
-  if (!allowed.includes(ctx.role) && RANK[ctx.role] < RANK[allowed[0] ?? "owner"]) {
+/** Authorization gate. Demo mode changes infrastructure, never a user's RBAC permissions. */
+export function authorize(ctx: { role: UserRole; authMode: string }, allowed: OrgRole[]): void {
+  if (!(ROLES as readonly string[]).includes(ctx.role)) {
+    throw new ApiError("FORBIDDEN", "A tenant role is required for this action.");
+  }
+  const role = ctx.role as OrgRole;
+  if (!allowed.includes(role) && RANK[role] < RANK[allowed[0] ?? "owner"]) {
     throw new ApiError("FORBIDDEN", "Your role cannot perform this action.");
   }
 }
@@ -174,18 +195,65 @@ export function authorize(ctx: { role: OrgRole; authMode: string }, allowed: Org
 
 export function assertBodySize(text: string, maxBytes: number) {
   if (new TextEncoder().encode(text).length > maxBytes) {
-    throw new ApiError("BAD_REQUEST", `Request body exceeds ${maxBytes} bytes.`);
+    throw new ApiError("BAD_REQUEST", `Request body exceeds ${maxBytes} bytes.`, { status: 413 });
   }
 }
 
-export function parseJsonBody(text: string): unknown {
+/** Consume Fetch request bytes with a hard bound instead of allocating the whole body first. */
+async function readBoundedBody(request: Request, maxBytes: number): Promise<string> {
+  const declared = Number(request.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw new ApiError("BAD_REQUEST", `Request body exceeds ${maxBytes} bytes.`, { status: 413 });
+  }
+  if (!request.body) return "";
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new ApiError("BAD_REQUEST", `Request body exceeds ${maxBytes} bytes.`, { status: 413 });
+    }
+    chunks.push(value);
+  }
+
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+export function parseRequestBody(text: string, contentType = "application/json"): unknown {
   if (!text) return {};
+  const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase();
+  if (mediaType === "application/x-www-form-urlencoded") {
+    const params = new URLSearchParams(text);
+    if ([...params.keys()].length > 100) throw new ApiError("BAD_REQUEST", "Too many form fields.");
+    const body: Record<string, string> = {};
+    for (const [key, value] of params) {
+      if (key.length <= 80 && value.length <= 4_000) body[key] = value;
+    }
+    return body;
+  }
+  if (mediaType && mediaType !== "application/json" && !mediaType.endsWith("+json")) {
+    throw new ApiError("BAD_REQUEST", "Unsupported request content type.");
+  }
   try {
     return JSON.parse(text);
   } catch {
     throw new ApiError("BAD_REQUEST", "Request body must be valid JSON.");
   }
 }
+
+/** Compatibility export used by older tests. */
+export const parseJsonBody = (text: string): unknown => parseRequestBody(text);
 
 /* ── Shared fetch-style handler (Web standards: Node 18+, edge runtimes) ── */
 
@@ -198,6 +266,7 @@ export interface FetchApp {
     search?: string;
     headers: Record<string, string>;
     body?: unknown;
+    rawBody?: string;
     ip?: string;
   }): Promise<ApiResponse>;
 }
@@ -216,21 +285,33 @@ export function createFetchHandler(app: FetchApp) {
       headers[key.toLowerCase()] = value;
     });
 
-    let body: unknown;
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      const text = await request.text().catch(() => "");
-      assertBodySize(text, app.env.maxBodyBytes);
-      body = parseJsonBody(text);
-    }
-
     let response: ApiResponse;
     try {
+      const unsafeMethod = !["GET", "HEAD", "OPTIONS"].includes(request.method.toUpperCase());
+      if (unsafeMethod && origin && !isAllowedOrigin(app.env, origin)) {
+        throw new ApiError("FORBIDDEN", "Request origin is not allowed.");
+      }
+      const cookieName = app.env.auth.cookieName;
+      const cookieAuthenticated = Boolean(cookieValue(headers["cookie"], cookieName));
+      const bearerAuthenticated = Boolean(bearerToken(headers["authorization"]));
+      if (unsafeMethod && cookieAuthenticated && !bearerAuthenticated && !origin) {
+        throw new ApiError("FORBIDDEN", "An Origin header is required for cookie-authenticated changes.");
+      }
+
+      let body: unknown;
+      let rawBody: string | undefined;
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        rawBody = await readBoundedBody(request, app.env.maxBodyBytes);
+        body = parseRequestBody(rawBody, headers["content-type"]);
+      }
+
       response = await app.handleSafe({
         method: request.method,
         path: url.pathname,
         search: url.search,
         headers,
         body,
+        rawBody,
         ip: hashKey(headers["x-forwarded-for"]?.split(",")[0]?.trim() ?? "local"),
       });
     } catch (error) {
@@ -249,7 +330,7 @@ export function createFetchHandler(app: FetchApp) {
           }
         : response.body;
 
-    return new Response(JSON.stringify(safeBody), {
+    return new Response(typeof safeBody === "string" ? safeBody : JSON.stringify(safeBody), {
       status: response.status,
       headers: {
         "content-type": "application/json; charset=utf-8",

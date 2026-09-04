@@ -1,179 +1,131 @@
 /**
- * Branding Security Service — Phase 20
- * 
- * Provides safe branding handling with:
- * - XSS prevention
- * - URL validation
- * - Color validation
- * - Content sanitization
- * - Injection protection
+ * Strict, dependency-free sanitization for tenant-controlled visual identity.
+ *
+ * Branding is rendered as text, image URLs, or a small set of validated tokens. Arbitrary HTML,
+ * CSS, font declarations, and style fragments are deliberately not part of the contract.
  */
 
-/**
- * Branding data
- */
 export interface BrandingData {
   displayName?: string;
   logoUrl?: string;
   faviconUrl?: string;
   primaryColor?: string;
   accentColor?: string;
-  theme?: "light" | "dark";
+  theme?: "light" | "dark" | "auto";
 }
 
-/**
- * Sanitized branding data
- */
 export interface SanitizedBranding extends BrandingData {
   sanitized: true;
   warnings: string[];
 }
 
-/**
- * Branding security service
- */
 export interface BrandingSecurityService {
   sanitizeBranding(data: BrandingData): SanitizedBranding;
   validateUrl(url: string, allowlist?: string[]): boolean;
   validateColor(color: string): boolean;
   sanitizeText(text: string, maxLength?: number): string;
+  normalizeColor(color: string): string | undefined;
 }
 
-/**
- * Create branding security service
- */
+const UNSAFE_BLOCKS =
+  /<(script|style|iframe|object|embed|svg|math|template)\b[^>]*>[\s\S]*?<\/\1\s*>/giu;
+const ANY_TAG = /<[^>]*>/gu;
+const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F-\u009F]/gu;
+const SAFE_NAME_CHARACTERS = /[^\p{L}\p{M}\p{N} .,&()\-–—]/gu;
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+const SHORT_HEX_COLOR = /^#[0-9a-fA-F]{3}$/;
+
 export function createBrandingSecurityService(): BrandingSecurityService {
   return {
-    sanitizeBranding(data: BrandingData): SanitizedBranding {
+    sanitizeBranding(data) {
       const warnings: string[] = [];
       const sanitized: BrandingData = {};
 
       if (data.displayName !== undefined) {
-        const sanitizedName = this.sanitizeText(data.displayName, 100);
-        if (sanitizedName !== data.displayName) {
-          warnings.push("Display name was sanitized");
-        }
-        sanitized.displayName = sanitizedName;
+        const displayName = this.sanitizeText(data.displayName, 100);
+        if (displayName !== data.displayName.trim()) warnings.push("Display name was sanitized");
+        sanitized.displayName = displayName;
       }
 
-      if (data.logoUrl !== undefined) {
-        if (data.logoUrl && !this.validateUrl(data.logoUrl)) {
-          warnings.push("Logo URL is invalid or not allowed");
-          sanitized.logoUrl = undefined;
-        } else {
-          sanitized.logoUrl = data.logoUrl;
-        }
+      for (const key of ["logoUrl", "faviconUrl"] as const) {
+        const raw = data[key];
+        if (raw === undefined) continue;
+        const value = raw.trim();
+        if (!value) sanitized[key] = "";
+        else if (this.validateUrl(value)) sanitized[key] = value;
+        else warnings.push(`${key === "logoUrl" ? "Logo" : "Favicon"} URL is invalid or not allowed`);
       }
 
-      if (data.faviconUrl !== undefined) {
-        if (data.faviconUrl && !this.validateUrl(data.faviconUrl)) {
-          warnings.push("Favicon URL is invalid or not allowed");
-          sanitized.faviconUrl = undefined;
-        } else {
-          sanitized.faviconUrl = data.faviconUrl;
-        }
-      }
-
-      if (data.primaryColor !== undefined) {
-        if (data.primaryColor && !this.validateColor(data.primaryColor)) {
-          warnings.push("Primary color is invalid");
-          sanitized.primaryColor = "#000000";
-        } else {
-          sanitized.primaryColor = data.primaryColor;
-        }
-      }
-
-      if (data.accentColor !== undefined) {
-        if (data.accentColor && !this.validateColor(data.accentColor)) {
-          warnings.push("Accent color is invalid");
-          sanitized.accentColor = "#3b82f6";
-        } else {
-          sanitized.accentColor = data.accentColor;
+      for (const [key, fallback] of [
+        ["primaryColor", "#000000"],
+        ["accentColor", "#3B82F6"],
+      ] as const) {
+        const raw = data[key];
+        if (raw === undefined) continue;
+        const color = this.normalizeColor(raw);
+        if (color) sanitized[key] = color;
+        else {
+          warnings.push(`${key === "primaryColor" ? "Primary" : "Accent"} color is invalid`);
+          sanitized[key] = fallback;
         }
       }
 
       if (data.theme !== undefined) {
-        if (data.theme !== "light" && data.theme !== "dark") {
-          warnings.push("Theme must be 'light' or 'dark'");
+        if (["light", "dark", "auto"].includes(data.theme)) sanitized.theme = data.theme;
+        else {
+          warnings.push("Theme is invalid");
           sanitized.theme = "light";
-        } else {
-          sanitized.theme = data.theme;
         }
       }
 
       return { ...sanitized, sanitized: true, warnings };
     },
 
-    validateUrl(url: string, allowlist?: string[]): boolean {
-      if (!url) return false;
-
+    validateUrl(url, allowlist) {
+      if (!url || url.length > 2048 || url.search(CONTROL_CHARACTERS) >= 0 || /[<>"'`\\]/u.test(url)) return false;
       try {
         const parsed = new URL(url);
-        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-          return false;
+        if (parsed.protocol !== "https:" || !parsed.hostname || parsed.username || parsed.password) return false;
+        if (allowlist?.length) {
+          const host = parsed.hostname.toLowerCase();
+          return allowlist.some((entry) => {
+            const allowed = entry.toLowerCase();
+            return host === allowed || host.endsWith(`.${allowed}`);
+          });
         }
-
-        if (url.toLowerCase().startsWith("javascript:") || url.toLowerCase().startsWith("data:")) {
-          return false;
-        }
-
-        const xssPatterns = [
-          /<script/i,
-          /javascript:/i,
-          /on\w+\s*=/i,
-          /eval\s*\(/i,
-          /expression\s*\(/i,
-          /vbscript:/i,
-          /livescript:/i,
-        ];
-
-        for (const pattern of xssPatterns) {
-          if (pattern.test(url)) {
-            return false;
-          }
-        }
-
-        if (allowlist && allowlist.length > 0) {
-          const hostname = parsed.hostname;
-          return allowlist.some((allowed) => hostname === allowed || hostname.endsWith("." + allowed));
-        }
-
         return true;
       } catch {
         return false;
       }
     },
 
-    validateColor(color: string): boolean {
-      if (!color) return false;
-
-      const hexPattern = /^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/;
-      if (hexPattern.test(color)) return true;
-
-      const rgbPattern = /^rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+(\s*,\s*(0|1|0?\.\d+))?\s*\)$/;
-      if (rgbPattern.test(color)) return true;
-
-      const namedColors = ["black", "white", "red", "green", "blue", "yellow", "orange", "purple", "pink", "gray", "grey"];
-      if (namedColors.includes(color.toLowerCase())) return true;
-
-      return false;
+    validateColor(color) {
+      return HEX_COLOR.test(color.trim()) || SHORT_HEX_COLOR.test(color.trim());
     },
 
-    sanitizeText(text: string, maxLength?: number): string {
-      if (!text) return "";
-
-      let sanitized = text.replace(/<[^>]*>/g, "");
-      sanitized = sanitized.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "");
-      sanitized = sanitized.replace(/\son\w+\s*=\s*["'][^"']*["']/gi, "");
-      sanitized = sanitized.replace(/javascript:/gi, "");
-      sanitized = sanitized.replace(/[<>"'`]/g, "");
-      sanitized = sanitized.trim();
-
-      if (maxLength && sanitized.length > maxLength) {
-        sanitized = sanitized.substring(0, maxLength);
+    normalizeColor(color) {
+      const value = color.trim();
+      if (HEX_COLOR.test(value)) return value.toLowerCase();
+      if (SHORT_HEX_COLOR.test(value)) {
+        const [r, g, b] = value.slice(1);
+        return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
       }
+      return undefined;
+    },
 
-      return sanitized;
+    sanitizeText(text, maxLength = 100) {
+      if (typeof text !== "string") return "";
+      let value = text.normalize("NFKC");
+      // Remove dangerous elements together with their contents before stripping ordinary tags.
+      for (let pass = 0; pass < 3; pass += 1) value = value.replace(UNSAFE_BLOCKS, " ");
+      value = value
+        .replace(/<!--[\s\S]*?-->/gu, " ")
+        .replace(ANY_TAG, " ")
+        .replace(CONTROL_CHARACTERS, " ")
+        .replace(SAFE_NAME_CHARACTERS, "")
+        .replace(/\s+/gu, " ")
+        .trim();
+      return value.slice(0, Math.max(0, maxLength));
     },
   };
 }

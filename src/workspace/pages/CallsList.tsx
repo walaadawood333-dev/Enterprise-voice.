@@ -1,3 +1,4 @@
+import { apiFetch } from "@/api";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { PhoneCall, PhoneIncoming, PhoneOutgoing, CheckCircle, XCircle, Clock } from "lucide-react";
@@ -29,7 +30,7 @@ export function CallsList() {
   const [activeTab, setActiveTab] = useState<TabFilter>("all");
 
   useEffect(() => {
-    fetch("/api/workspace/calls")
+    apiFetch("/api/workspace/calls")
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
       .then((data) => {
         setCalls(data);

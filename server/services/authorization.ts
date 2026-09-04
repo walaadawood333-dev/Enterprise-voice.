@@ -283,12 +283,8 @@ export function createAuthorizationService(deps: {
   };
 
   return {
-    hasPermission(role, authMode, action) {
-      // Demo mode bypasses permission checks for development
-      if (authMode === "demo") {
-        return true;
-      }
-
+    hasPermission(role, _authMode, action) {
+      // Demo sessions use the same permission matrix as production sessions.
       const permissions = ROLE_PERMISSIONS[role];
       if (!permissions) {
         logger.warn("auth_unknown_role", { role });

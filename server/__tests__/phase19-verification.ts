@@ -289,8 +289,10 @@ async function testAuditTrail() {
   const auditLog = await adminService.getAuditLog();
   assert.ok(auditLog.events.length >= 1, "Should have audit events");
   
-  const suspendEvent = auditLog.events.find((e) => e.action === "organization.suspend");
-  assert.ok(suspendEvent, "Should have suspend event");
+  const suspendEvent = auditLog.events.find(
+    (e) => e.action === "ORGANIZATION_UPDATED" && e.metadata?.newStatus === "suspended"
+  );
+  assert.ok(suspendEvent, "Should have a typed organization lifecycle audit event");
   assert.equal(suspendEvent.organizationId, orgId, "Event should be scoped to organization");
 
   const filteredLog = await adminService.getAuditLog({ organizationId: orgId });

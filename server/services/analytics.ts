@@ -7,6 +7,7 @@
 
 import type { Db } from "../db/store";
 import { KPIRegistry, type KPICategory } from "./kpiRegistry";
+import { escapeCsvCell } from "./reports";
 
 /**
  * Time range filter
@@ -308,7 +309,7 @@ export class AnalyticsService {
         case "compliance_violations":
           const violations = await this.db.complianceEvaluations.listByOrg(organizationId);
           const violationsInRange = this.filterByDateRange(violations, startDate, endDate, "createdAt");
-          value = violationsInRange.filter((v) => v.status === "violation").length;
+          value = violationsInRange.filter((v) => v.status === "VIOLATION").length;
           hasData = true;
           break;
 
@@ -320,7 +321,7 @@ export class AnalyticsService {
 
         case "connected_connectors":
           const connectedConnectors = await this.db.connectors.listByOrg(organizationId);
-          value = connectedConnectors.filter((c) => c.status === "connected").length;
+          value = connectedConnectors.filter((c) => c.status === "CONNECTED").length;
           hasData = true;
           break;
 
@@ -340,8 +341,8 @@ export class AnalyticsService {
         default:
           throw new Error(`KPI calculation not implemented: ${kpiId}`);
       }
-    } catch (error) {
-      console.error(`Error calculating KPI ${kpiId}:`, error);
+    } catch {
+      console.error(JSON.stringify({ level: "error", msg: "analytics_kpi_calculation_failed", kpiId }));
       value = null;
       hasData = false;
     }
@@ -516,7 +517,9 @@ export class AnalyticsService {
       for (const domain of analytics.domains) {
         for (const kpi of domain.kpis) {
           rows.push(
-            `${kpi.category},${kpi.name},${kpi.value ?? "N/A"},${kpi.unit},${kpi.hasData}`
+            [kpi.category, kpi.name, kpi.value ?? "N/A", kpi.unit, kpi.hasData]
+              .map(escapeCsvCell)
+              .join(",")
           );
         }
       }
@@ -524,7 +527,9 @@ export class AnalyticsService {
       // Domain analytics
       rows.push("KPI,Value,Unit,Has Data");
       for (const kpi of analytics.kpis) {
-        rows.push(`${kpi.name},${kpi.value ?? "N/A"},${kpi.unit},${kpi.hasData}`);
+        rows.push(
+          [kpi.name, kpi.value ?? "N/A", kpi.unit, kpi.hasData].map(escapeCsvCell).join(",")
+        );
       }
     }
 

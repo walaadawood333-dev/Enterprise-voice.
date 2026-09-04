@@ -11,10 +11,6 @@ import type {
   VoiceOperationsReport,
   AgentPerformanceReport,
   CampaignReport,
-  CallRow,
-  VoiceSessionRow,
-  AgentRow,
-  CampaignRow,
 } from "../../shared/contracts";
 import type { Db } from "../db/store";
 
@@ -30,6 +26,14 @@ export interface ReportService {
 
   /** Export report data to CSV */
   exportToCSV(data: any[], columns: string[]): string;
+}
+
+/** Neutralize spreadsheet formulas before RFC-4180-style escaping. */
+export function escapeCsvCell(value: unknown): string {
+  const raw = value === null || value === undefined ? "" : String(value);
+  const text = /^[\u0009\u000d\u0020]*[=+\-@]/.test(raw) ? `'${raw}` : raw;
+  if (/[",\n\r]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+  return text;
 }
 
 /**
@@ -353,23 +357,12 @@ export function createReportService(db: Db): ReportService {
       if (data.length === 0) return "";
 
       // Header row
-      const header = columns.join(",");
+      const header = columns.map(escapeCsvCell).join(",");
 
       // Data rows
-      const rows = data.map((row) => {
-        return columns
-          .map((col) => {
-            const value = row[col];
-            // Escape quotes and wrap in quotes if contains comma or quote
-            if (value === null || value === undefined) return "";
-            const str = String(value);
-            if (str.includes(",") || str.includes('"') || str.includes("\n")) {
-              return `"${str.replace(/"/g, '""')}"`;
-            }
-            return str;
-          })
-          .join(",");
-      });
+      const rows = data.map((row) =>
+        columns.map((column) => escapeCsvCell(row[column])).join(",")
+      );
 
       return [header, ...rows].join("\n");
     },

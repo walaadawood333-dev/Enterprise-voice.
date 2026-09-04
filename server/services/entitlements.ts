@@ -1,40 +1,66 @@
 /**
- * Entitlement Engine Service — Phase 10A
+ * SaaS entitlement engine.
  *
- * Central service for checking feature entitlements and limits.
- * Enforces the hierarchy: Plan → Entitlements → Limits → Organization
+ * This is the backend source of truth for commercial access:
+ * Organization -> Subscription -> Plan -> plan features/limits -> organization overrides.
+ * Missing or inactive commercial data always fails closed.
  */
 
-import type {
-  Feature,
-  OrganizationLimits,
-  PlanRow,
-  SubscriptionRow,
-  SubscriptionStatus,
+import {
+  FEATURES,
+  type Feature,
+  type OrganizationLimits,
+  type PlanRow,
+  type SubscriptionRow,
+  type SubscriptionStatus,
 } from "../../shared/contracts";
 import type { Db } from "../db/store";
+import { ApiError } from "../lib/observability";
+
+export const ZERO_LIMITS: OrganizationLimits = Object.freeze({
+  maxUsers: 0,
+  maxAgents: 0,
+  maxMonthlyMinutes: 0,
+  maxCampaigns: 0,
+  maxConnectors: 0,
+});
+
+export interface ResolvedCapability {
+  feature: Feature;
+  enabled: boolean;
+  source: "plan" | "override" | "unavailable";
+}
 
 export interface EntitlementEngine {
-  /** Check if an organization has a feature enabled */
   hasFeature(organizationId: string, feature: Feature): Promise<boolean>;
-
-  /** Get all enabled features for an organization */
+  assertFeature(organizationId: string, feature: Feature): Promise<void>;
   getEnabledFeatures(organizationId: string): Promise<Feature[]>;
-
-  /** Get effective limits for an organization (plan defaults + overrides) */
+  getCapabilities(organizationId: string): Promise<ResolvedCapability[]>;
   getEffectiveLimits(organizationId: string): Promise<OrganizationLimits>;
-
-  /** Check if an organization has reached a limit */
   checkLimit(
     organizationId: string,
     limitKey: keyof OrganizationLimits,
     currentValue: number
   ): Promise<{ allowed: boolean; limit: number; current: number }>;
-
-  /** Get subscription for an organization */
+  assertLimit(
+    organizationId: string,
+    limitKey: keyof OrganizationLimits,
+    currentValue: number
+  ): Promise<void>;
+  /** Authoritative usage is read from tenant-scoped repositories, never supplied by an API caller. */
+  getCurrentLimitUsage(organizationId: string): Promise<Record<keyof OrganizationLimits, number>>;
+  checkCurrentLimit(
+    organizationId: string,
+    limitKey: keyof OrganizationLimits
+  ): Promise<{ allowed: boolean; limit: number; current: number; remaining: number }>;
+  assertCurrentLimit(organizationId: string, limitKey: keyof OrganizationLimits): Promise<void>;
+  /** Serializes check + write in this API process so concurrent requests cannot bypass a count limit. */
+  withinCurrentLimit<T>(
+    organizationId: string,
+    limitKey: keyof OrganizationLimits,
+    operation: () => Promise<T>
+  ): Promise<T>;
   getSubscription(organizationId: string): Promise<SubscriptionWithPlan | null>;
-
-  /** Check if subscription is active */
   isSubscriptionActive(organizationId: string): Promise<boolean>;
 }
 
@@ -42,18 +68,13 @@ export interface SubscriptionWithPlan extends SubscriptionRow {
   plan: PlanRow;
 }
 
-/**
- * Default plan definitions for seeding the database.
- */
+/** Only capabilities backed by current product routes/services are included. */
 export const DEFAULT_PLANS: Omit<PlanRow, "id" | "createdAt" | "updatedAt">[] = [
   {
     name: "Starter",
     planType: "starter",
-    features: [
-      "ai_agents",
-      "voice_calls",
-      "analytics",
-    ],
+    status: "active",
+    features: ["ai_agents", "voice_calls", "analytics"],
     limits: {
       maxUsers: 5,
       maxAgents: 3,
@@ -61,13 +82,11 @@ export const DEFAULT_PLANS: Omit<PlanRow, "id" | "createdAt" | "updatedAt">[] = 
       maxCampaigns: 0,
       maxConnectors: 1,
     },
-    priceCents: 9900,
-    interval: "month",
-    isActive: true,
   },
   {
     name: "Professional",
     planType: "professional",
+    status: "active",
     features: [
       "ai_agents",
       "voice_calls",
@@ -85,13 +104,11 @@ export const DEFAULT_PLANS: Omit<PlanRow, "id" | "createdAt" | "updatedAt">[] = 
       maxCampaigns: 10,
       maxConnectors: 5,
     },
-    priceCents: 49900,
-    interval: "month",
-    isActive: true,
   },
   {
     name: "Enterprise",
     planType: "enterprise",
+    status: "active",
     features: [
       "ai_agents",
       "voice_calls",
@@ -103,7 +120,6 @@ export const DEFAULT_PLANS: Omit<PlanRow, "id" | "createdAt" | "updatedAt">[] = 
       "advanced_analytics",
       "reporting",
       "data_connectors",
-      "knowledge_base",
       "compliance",
       "dnc_management",
       "audit_trail",
@@ -120,127 +136,202 @@ export const DEFAULT_PLANS: Omit<PlanRow, "id" | "createdAt" | "updatedAt">[] = 
       maxCampaigns: 1000,
       maxConnectors: 100,
     },
-    priceCents: 0,
-    interval: "month",
-    isActive: true,
   },
 ];
 
-/**
- * Create the entitlement engine service.
- */
+const isKnownFeature = (value: string): value is Feature =>
+  (FEATURES as readonly string[]).includes(value);
+
+const activeSubscription = (subscription: SubscriptionRow): boolean => {
+  if (!isStatusActive(subscription.status)) return false;
+  if (
+    subscription.status.toLowerCase() === "trial" &&
+    subscription.trialEndsAt &&
+    new Date(subscription.trialEndsAt).getTime() <= Date.now()
+  ) {
+    return false;
+  }
+  return true;
+};
+
+const availablePlan = (plan: PlanRow): boolean =>
+  plan.status === "active" || plan.status === "archived";
+
 export function createEntitlementEngine(db: Db): EntitlementEngine {
-  return {
-    async hasFeature(organizationId: string, feature: Feature): Promise<boolean> {
-      const subscription = await db.subscriptions.getByOrg(organizationId);
-      if (!subscription) return false;
+  const resolve = async (organizationId: string): Promise<SubscriptionWithPlan | null> => {
+    const organization = await db.organizations.get(organizationId);
+    if (!organization || organization.status === "suspended") return null;
 
-      // Check subscription status
-      if (!isStatusActive(subscription.status)) return false;
+    const subscription = await db.subscriptions.getByOrg(organizationId);
+    if (!subscription || !activeSubscription(subscription)) return null;
 
-      // Get plan features
-      const plan = await db.plans.get(subscription.planId);
-      if (!plan) return false;
+    const plan = await db.plans.get(subscription.planId);
+    if (!plan || !availablePlan(plan)) return null;
+    return { ...subscription, plan };
+  };
 
-      return plan.features.includes(feature);
+  const capabilities = async (organizationId: string): Promise<ResolvedCapability[]> => {
+    const subscription = await resolve(organizationId);
+    if (!subscription) {
+      return FEATURES.map((feature) => ({ feature, enabled: false, source: "unavailable" }));
+    }
+
+    const overrides = new Map(
+      (await db.entitlements.listByOrg(organizationId)).map((row) => [row.feature, row.enabled])
+    );
+    return FEATURES.map((feature) => {
+      const overridden = overrides.get(feature);
+      return overridden === undefined
+        ? { feature, enabled: subscription.plan.features.includes(feature), source: "plan" as const }
+        : { feature, enabled: overridden, source: "override" as const };
+    });
+  };
+
+  const limitQueues = new Map<string, Promise<void>>();
+
+  const engine: EntitlementEngine = {
+    async hasFeature(organizationId, feature) {
+      if (!isKnownFeature(feature)) return false;
+      return (await capabilities(organizationId)).find((item) => item.feature === feature)?.enabled === true;
     },
 
-    async getEnabledFeatures(organizationId: string): Promise<Feature[]> {
-      const subscription = await db.subscriptions.getByOrg(organizationId);
-      if (!subscription) return [];
-
-      if (!isStatusActive(subscription.status)) return [];
-
-      const plan = await db.plans.get(subscription.planId);
-      if (!plan) return [];
-
-      return plan.features;
+    async assertFeature(organizationId, feature) {
+      if (!(await engine.hasFeature(organizationId, feature))) {
+        throw new ApiError(
+          "FORBIDDEN",
+          `The ${feature} capability is not available for this organization.`,
+          { status: 403 }
+        );
+      }
     },
 
-    async getEffectiveLimits(organizationId: string): Promise<OrganizationLimits> {
-      const subscription = await db.subscriptions.getByOrg(organizationId);
-      if (!subscription) {
-        // Default limits for organizations without subscriptions
-        return {
-          maxUsers: 5,
-          maxAgents: 3,
-          maxMonthlyMinutes: 1000,
-          maxCampaigns: 0,
-          maxConnectors: 1,
-        };
-      }
-
-      // If organization has custom effective limits, use those
-      if (subscription.effectiveLimits) {
-        return subscription.effectiveLimits;
-      }
-
-      // Otherwise use plan defaults
-      const plan = await db.plans.get(subscription.planId);
-      if (!plan) {
-        return {
-          maxUsers: 5,
-          maxAgents: 3,
-          maxMonthlyMinutes: 1000,
-          maxCampaigns: 0,
-          maxConnectors: 1,
-        };
-      }
-
-      return plan.limits;
+    async getEnabledFeatures(organizationId) {
+      return (await capabilities(organizationId))
+        .filter((item) => item.enabled)
+        .map((item) => item.feature);
     },
 
-    async checkLimit(
-      organizationId: string,
-      limitKey: keyof OrganizationLimits,
-      currentValue: number
-    ): Promise<{ allowed: boolean; limit: number; current: number }> {
-      const limits = await this.getEffectiveLimits(organizationId);
-      const limit = limits[limitKey];
+    getCapabilities: capabilities,
+
+    async getEffectiveLimits(organizationId) {
+      const subscription = await resolve(organizationId);
+      if (!subscription) return { ...ZERO_LIMITS };
       return {
-        allowed: currentValue < limit,
-        limit,
-        current: currentValue,
+        ...subscription.plan.limits,
+        ...(subscription.effectiveLimits ?? {}),
       };
     },
 
-    async getSubscription(organizationId: string): Promise<SubscriptionWithPlan | null> {
-      const subscription = await db.subscriptions.getByOrg(organizationId);
-      if (!subscription) return null;
-
-      const plan = await db.plans.get(subscription.planId);
-      if (!plan) return null;
-
-      return { ...subscription, plan };
+    async checkLimit(organizationId, limitKey, currentValue) {
+      const limit = (await engine.getEffectiveLimits(organizationId))[limitKey];
+      return { allowed: currentValue < limit, limit, current: currentValue };
     },
 
-    async isSubscriptionActive(organizationId: string): Promise<boolean> {
-      const subscription = await db.subscriptions.getByOrg(organizationId);
-      if (!subscription) return false;
-      return isStatusActive(subscription.status);
+    async assertLimit(organizationId, limitKey, currentValue) {
+      const result = await engine.checkLimit(organizationId, limitKey, currentValue);
+      if (!result.allowed) {
+        throw new ApiError(
+          "FORBIDDEN",
+          `The organization has reached ${limitKey} (${result.current}/${result.limit}).`,
+          { status: 403 }
+        );
+      }
+    },
+
+    async getCurrentLimitUsage(organizationId) {
+      const monthStart = new Date();
+      monthStart.setUTCDate(1);
+      monthStart.setUTCHours(0, 0, 0, 0);
+      const [users, agents, campaigns, connectors, usage] = await Promise.all([
+        db.users.listByOrg(organizationId),
+        db.agents.listByOrg(organizationId),
+        db.campaigns.count(organizationId),
+        db.connectors.count(organizationId),
+        db.usage.listByOrg(organizationId),
+      ]);
+      const audioSeconds = usage
+        .filter(
+          (event) =>
+            event.eventType === "audio_seconds" &&
+            Number.isFinite(event.quantity) &&
+            event.quantity > 0 &&
+            new Date(event.createdAt) >= monthStart
+        )
+        .reduce((total, event) => total + event.quantity, 0);
+      return {
+        maxUsers: users.length,
+        maxAgents: agents.length,
+        maxMonthlyMinutes: audioSeconds / 60,
+        maxCampaigns: campaigns,
+        maxConnectors: connectors,
+      };
+    },
+
+    async checkCurrentLimit(organizationId, limitKey) {
+      const [limits, usage] = await Promise.all([
+        engine.getEffectiveLimits(organizationId),
+        engine.getCurrentLimitUsage(organizationId),
+      ]);
+      const limit = limits[limitKey];
+      const current = usage[limitKey];
+      return {
+        allowed: current < limit,
+        limit,
+        current,
+        remaining: Math.max(0, limit - current),
+      };
+    },
+
+    async assertCurrentLimit(organizationId, limitKey) {
+      const result = await engine.checkCurrentLimit(organizationId, limitKey);
+      if (!result.allowed) {
+        throw new ApiError(
+          "FORBIDDEN",
+          `The organization has reached ${limitKey} (${Math.round(result.current * 10) / 10}/${result.limit}).`,
+          { status: 403 }
+        );
+      }
+    },
+
+    async withinCurrentLimit(organizationId, limitKey, operation) {
+      const queueKey = `${organizationId}:${limitKey}`;
+      const predecessor = limitQueues.get(queueKey) ?? Promise.resolve();
+      let release!: () => void;
+      const gate = new Promise<void>((resolveGate) => { release = resolveGate; });
+      const queued = predecessor.then(() => gate);
+      limitQueues.set(queueKey, queued);
+      await predecessor;
+      try {
+        await engine.assertCurrentLimit(organizationId, limitKey);
+        return await operation();
+      } finally {
+        release();
+        if (limitQueues.get(queueKey) === queued) limitQueues.delete(queueKey);
+      }
+    },
+
+    getSubscription: resolve,
+
+    async isSubscriptionActive(organizationId) {
+      return (await resolve(organizationId)) !== null;
     },
   };
+
+  return engine;
 }
 
-/**
- * Check if a subscription status is considered active.
- */
 function isStatusActive(status: SubscriptionStatus): boolean {
   const normalized = status.toLowerCase();
   return normalized === "active" || normalized === "trial";
 }
 
-/**
- * Seed default plans into the database if they don't exist.
- */
+/** Idempotent plan seeding. It creates missing built-ins but never overwrites admin changes. */
 export async function seedDefaultPlans(db: Db): Promise<void> {
   const existing = await db.plans.list();
-  if (existing.length > 0) return;
-
+  const ids = new Set(existing.map((plan) => plan.id));
   for (const plan of DEFAULT_PLANS) {
-    await db.plans.create({
-      id: `plan_${plan.planType}`,
-      ...plan,
-    });
+    const id = `plan_${plan.planType}`;
+    if (ids.has(id)) continue;
+    await db.plans.create({ id, ...plan });
   }
 }

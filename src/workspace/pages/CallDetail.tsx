@@ -1,3 +1,4 @@
+import { apiFetch } from "@/api";
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft, PhoneCall, PhoneIncoming, PhoneOutgoing, Clock, MessageSquare } from "lucide-react";
@@ -46,7 +47,7 @@ export function CallDetail() {
 
   useEffect(() => {
     if (!callId) return;
-    fetch(`/api/workspace/calls/${callId}`)
+    apiFetch(`/api/workspace/calls/${callId}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
       .then(setData)
       .catch(() => setError(true));

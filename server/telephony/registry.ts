@@ -75,17 +75,6 @@ export function createProviderRegistry() {
     return "configured";
   };
 
-  /** Derive transport type from provider info. */
-  const deriveTransport = (
-    provider: TelephonyProvider,
-    explicit?: "pstn" | "sip" | "webrtc" | "gsm" | "simulation"
-  ): "pstn" | "sip" | "webrtc" | "gsm" | "simulation" => {
-    if (explicit) return explicit;
-    if (provider.info.simulation) return "simulation";
-    // Default to pstn — the most common production case.
-    // Future providers can declare their transport in their info.
-    return "pstn";
-  };
 
   return {
     /**

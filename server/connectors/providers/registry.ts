@@ -5,7 +5,7 @@
  * Provider-independent - no hardcoded provider logic.
  */
 
-import type { ConnectorType } from "../../shared/contracts";
+import type { ConnectorType } from "../../../shared/contracts";
 import type { ConnectorProvider, ConnectorCredentials } from "./base";
 import { SalesforceProvider } from "./salesforce";
 import type { Logger } from "../../lib/observability";
@@ -66,6 +66,11 @@ export class ConnectorProviderRegistry {
     return Array.from(this.providers.values())
       .filter((reg) => reg.available)
       .map((reg) => reg.provider);
+  }
+
+  /** Safe registry snapshot, including unavailable adapters, for platform control surfaces. */
+  listRegistrations(): Array<{ provider: ConnectorProvider; available: boolean }> {
+    return Array.from(this.providers.values()).map(({ provider, available }) => ({ provider, available }));
   }
 
   /**

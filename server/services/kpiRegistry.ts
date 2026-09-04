@@ -5,8 +5,6 @@
  * Ensures every metric is traceable to actual persisted data.
  */
 
-import type { Db } from "../db/store";
-
 /**
  * KPI Category
  */

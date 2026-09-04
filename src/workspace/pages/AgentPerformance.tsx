@@ -1,6 +1,7 @@
+import { apiFetch } from "@/api";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { TrendingUp, Clock, CheckCircle, XCircle, Activity } from "lucide-react";
+import { TrendingUp, Clock, CheckCircle, XCircle } from "lucide-react";
 
 interface AgentPerformance {
   agentId: string;
@@ -18,7 +19,7 @@ export function AgentPerformance() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/workspace/agents/performance")
+    apiFetch("/api/workspace/agents/performance")
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
       .then(setPerformance)
       .catch(() => setLoading(false));

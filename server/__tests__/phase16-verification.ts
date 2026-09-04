@@ -248,11 +248,11 @@ async function testRoleBasedAuthorization() {
   assert(!authz.hasPermission(viewerRole, authMode, "agent.create"), "Viewer does not have agent.create permission");
   assert(!authz.hasPermission(viewerRole, authMode, "report.generate"), "Viewer does not have report.generate permission");
 
-  // Test: Demo mode bypass
+  // Demo Mode must retain the production RBAC boundary.
   const demoMode = "demo";
-  assert(authz.hasPermission(viewerRole, demoMode, "organization.update"), "Demo mode bypasses organization.update");
-  assert(authz.hasPermission(viewerRole, demoMode, "user.create"), "Demo mode bypasses user.create");
-  assert(authz.hasPermission(viewerRole, demoMode, "agent.create"), "Demo mode bypasses agent.create");
+  assert(!authz.hasPermission(viewerRole, demoMode, "organization.update"), "Demo viewer cannot update the organization");
+  assert(!authz.hasPermission(viewerRole, demoMode, "user.create"), "Demo viewer cannot create users");
+  assert(!authz.hasPermission(viewerRole, demoMode, "agent.create"), "Demo viewer cannot create agents");
 }
 
 async function testPlatformAuthorization() {

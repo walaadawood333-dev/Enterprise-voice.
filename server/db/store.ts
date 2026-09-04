@@ -13,25 +13,15 @@ import {
   type AgentLanguage,
   type AgentRow,
   type AuditEventRow,
-  type CallDirection,
   type CallEventRow,
-  type CallEventType,
-  type CallOutcome,
-  type CallOutcomeType,
   type CallRow,
-  type CallStatus,
   type CampaignContactPhase12Row,
   type CampaignContactRow,
   type CampaignEventRow,
-  type CampaignEventType12,
   type CampaignRow,
   type CampaignScheduleRow,
-  type ComplianceCategory,
   type ComplianceEvaluationRow,
-  type ComplianceEvaluationStatus,
   type CompliancePolicyRow,
-  type ComplianceSeverity,
-  type ConnectorActivityType,
   type ConnectorStatus,
   type ContactQueueStatus,
   type ContactRow,
@@ -40,35 +30,25 @@ import {
   type DataConnectorFieldMappingRow,
   type DataConnectorRow,
   type DataConnectorSyncJobRow,
-  type DataTransformerType,
   type DialAttemptRow,
   type DialingQueueItemStatus,
   type DNCIdentifierType,
   type DNCRecordRow,
-  type DNCSource,
-  type DNCStatus,
   type IndustryName,
   type InvoiceRow,
-  type InvoiceStatus,
   type MessageRow,
   type OperationalAlertRow,
-  type OperationalAlertSeverity,
-  type OperationalAlertSource,
   type OrganizationBrandingRow,
+  type OrganizationEntitlementRow,
   type OrganizationRow,
   type OrganizationTelephonyProviderRow,
-  type OrgRole,
+  type UserRole,
   type PaymentRow,
-  type PaymentStatus,
-  type PaymentMethodType,
   type PhoneValidationStatus,
   type PlanRow,
-  type RetryBackoffStrategy,
   type RetryPolicyRow,
   type SubscriptionRow,
-  type SyncDirection,
   type SyncJobStatus,
-  type SyncMode,
   type UserCredential,
   type UserRow,
   type UsageEventRow,
@@ -80,10 +60,7 @@ import {
   type QAEvaluationScoreRow,
   type QAFindingRow,
   type QATemplateStatus,
-  type QAEvaluationType,
   type QAEvaluationStatus,
-  type QAScoringMethod,
-  type QAFindingSeverity,
   type QAFindingStatus,
 } from "../../shared/contracts";
 import { DEMO_AGENT, DEMO_ORGANIZATION } from "../../shared/demo";
@@ -146,9 +123,14 @@ export interface Db {
       organizationId: string;
       email: string;
       name: string;
-      role: OrgRole;
+      role: UserRole;
       status?: UserRow["status"];
     }): Promise<UserRow>;
+    update(
+      organizationId: string,
+      userId: string,
+      patch: Partial<Pick<UserRow, "name" | "role" | "status">>
+    ): Promise<UserRow | undefined>;
     setPassword(userId: string, passwordHash: string): Promise<void>;
   };
   agents: {
@@ -224,13 +206,24 @@ export interface Db {
     get(id: string): Promise<PlanRow | undefined>;
     list(): Promise<PlanRow[]>;
     create(input: Omit<PlanRow, "createdAt" | "updatedAt">): Promise<PlanRow>;
-    update(id: string, changes: Partial<Pick<PlanRow, "name" | "features" | "limits" | "priceCents" | "isActive">>): Promise<PlanRow | undefined>;
+    update(id: string, changes: Partial<Pick<PlanRow, "name" | "planType" | "status" | "features" | "limits">>): Promise<PlanRow | undefined>;
   };
   subscriptions: {
     getByOrg(organizationId: string): Promise<SubscriptionRow | undefined>;
-    create(input: Omit<SubscriptionRow, "createdAt" | "updatedAt">): Promise<SubscriptionRow>;
-    update(id: string, changes: Partial<Pick<SubscriptionRow, "status" | "effectiveLimits" | "trialEndsAt" | "currentPeriodStart" | "currentPeriodEnd" | "cancelledAt">>): Promise<SubscriptionRow | undefined>;
+    create(
+      input: Omit<SubscriptionRow, "id" | "startedAt" | "createdAt" | "updatedAt"> & {
+        id?: string;
+        startedAt?: string;
+      }
+    ): Promise<SubscriptionRow>;
+    update(id: string, changes: Partial<Pick<SubscriptionRow, "planId" | "status" | "effectiveLimits" | "trialEndsAt" | "currentPeriodStart" | "currentPeriodEnd" | "cancelledAt">>): Promise<SubscriptionRow | undefined>;
     listAll(): Promise<SubscriptionRow[]>;
+  };
+  entitlements: {
+    get(organizationId: string, feature: OrganizationEntitlementRow["feature"]): Promise<OrganizationEntitlementRow | undefined>;
+    listByOrg(organizationId: string): Promise<OrganizationEntitlementRow[]>;
+    upsert(input: Omit<OrganizationEntitlementRow, "id" | "createdAt" | "updatedAt">): Promise<OrganizationEntitlementRow>;
+    remove(organizationId: string, feature: OrganizationEntitlementRow["feature"]): Promise<boolean>;
   };
   /* ── Phase 15 — Billing ── */
   invoices: {
@@ -252,7 +245,7 @@ export interface Db {
   branding: {
     getByOrg(organizationId: string): Promise<OrganizationBrandingRow | undefined>;
     upsert(input: Omit<OrganizationBrandingRow, "createdAt" | "updatedAt">): Promise<OrganizationBrandingRow>;
-    update(organizationId: string, changes: Partial<Pick<OrganizationBrandingRow, "displayName" | "logoUrl" | "primaryColor" | "accentColor" | "theme">>): Promise<OrganizationBrandingRow | undefined>;
+    update(organizationId: string, changes: Partial<Pick<OrganizationBrandingRow, "displayName" | "logoUrl" | "faviconUrl" | "primaryColor" | "accentColor" | "theme">>): Promise<OrganizationBrandingRow | undefined>;
   };
   audit: {
     create(input: Omit<AuditEventRow, "id" | "createdAt">): Promise<AuditEventRow>;
@@ -477,6 +470,7 @@ export function createMemoryDb(): Db {
     orgProviders: Map<string, OrganizationTelephonyProviderRow>;
     plans: Map<string, PlanRow>;
     subscriptions: Map<string, SubscriptionRow>;
+    entitlements: Map<string, OrganizationEntitlementRow>;
     invoices: Map<string, InvoiceRow>;
     payments: Map<string, PaymentRow>;
     branding: Map<string, OrganizationBrandingRow>;
@@ -532,6 +526,37 @@ export function createMemoryDb(): Db {
     const agents = new Map<string, AgentRow>();
     for (const agent of seedAgents(DEMO_ORGANIZATION_ID, stamp)) agents.set(agent.id, agent);
 
+    // The in-browser demo tenant has a real local subscription so entitlement checks exercise
+    // the same fail-closed path as production. This is capability seeding, never fake billing.
+    const plans = new Map<string, PlanRow>();
+    plans.set("plan_starter", {
+      id: "plan_starter",
+      name: "Starter",
+      planType: "starter",
+      status: "active",
+      // The browser demo exposes the real connector control center with the single registered
+      // adapter. Production Starter packaging remains unchanged in DEFAULT_PLANS.
+      features: ["ai_agents", "voice_calls", "analytics", "data_connectors"],
+      limits: { maxUsers: 5, maxAgents: 3, maxMonthlyMinutes: 1000, maxCampaigns: 0, maxConnectors: 1 },
+      createdAt: stamp,
+      updatedAt: stamp,
+    });
+    const subscriptions = new Map<string, SubscriptionRow>();
+    subscriptions.set("sub_demo_starter", {
+      id: "sub_demo_starter",
+      organizationId: DEMO_ORGANIZATION_ID,
+      planId: "plan_starter",
+      status: "active",
+      effectiveLimits: null,
+      trialEndsAt: null,
+      currentPeriodStart: null,
+      currentPeriodEnd: null,
+      cancelledAt: null,
+      startedAt: stamp,
+      createdAt: stamp,
+      updatedAt: stamp,
+    });
+
     return {
       organizations,
       users,
@@ -543,8 +568,9 @@ export function createMemoryDb(): Db {
       calls: new Map(),
       callEvents: [],
       orgProviders: new Map(),
-      plans: new Map(),
-      subscriptions: new Map(),
+      plans,
+      subscriptions,
+      entitlements: new Map(),
       invoices: new Map(),
       payments: new Map(),
       branding: new Map(),
@@ -645,6 +671,13 @@ export function createMemoryDb(): Db {
         };
         data.users.set(row.id, row);
         return row;
+      },
+      update: async (organizationId, userId, patch) => {
+        const user = data.users.get(userId);
+        if (!user || user.organizationId !== organizationId) return undefined;
+        const updated = { ...user, ...patch, updatedAt: now() };
+        data.users.set(userId, updated);
+        return updated;
       },
       setPassword: async (userId, passwordHash) => {
         data.credentials.set(userId, passwordHash);
@@ -888,11 +921,13 @@ export function createMemoryDb(): Db {
         return undefined;
       },
       create: async (input) => {
+        const stamp = now();
         const row: SubscriptionRow = {
-          id: newId("sub"),
           ...input,
-          createdAt: now(),
-          updatedAt: now(),
+          id: input.id || newId("sub"),
+          startedAt: input.startedAt || stamp,
+          createdAt: stamp,
+          updatedAt: stamp,
         };
         data.subscriptions.set(row.id, row);
         return row;
@@ -907,7 +942,31 @@ export function createMemoryDb(): Db {
       listAll: async () => Array.from(data.subscriptions.values()),
     },
 
-    /* ── Phase 15 — Billing Storage ── */
+    entitlements: {
+      get: async (organizationId, feature) =>
+        data.entitlements.get(`${organizationId}:${feature}`),
+      listByOrg: async (organizationId) =>
+        [...data.entitlements.values()]
+          .filter((row) => row.organizationId === organizationId)
+          .sort((a, b) => a.feature.localeCompare(b.feature)),
+      upsert: async (input) => {
+        const key = `${input.organizationId}:${input.feature}`;
+        const current = data.entitlements.get(key);
+        const stamp = now();
+        const row: OrganizationEntitlementRow = {
+          ...input,
+          id: current?.id ?? newId("ent"),
+          createdAt: current?.createdAt ?? stamp,
+          updatedAt: stamp,
+        };
+        data.entitlements.set(key, row);
+        return row;
+      },
+      remove: async (organizationId, feature) =>
+        data.entitlements.delete(`${organizationId}:${feature}`),
+    },
+
+    /* ── Phase 15 — Billing Storage (unused until a payment provider is configured) ── */
     invoices: {
       create: async (input) => {
         const stamp = now();

@@ -5,7 +5,7 @@
 
 import bcrypt from "bcryptjs";
 import { jwtDecrypt, jwtVerify, SignJWT, type JWKSet } from "jose";
-import type { OrgRole } from "../../../shared/contracts";
+import type { UserRole } from "../../../shared/contracts";
 import type { AuthBroker, AuthClaims } from "./broker";
 
 export interface ProductionAuthOptions {
@@ -86,7 +86,7 @@ export function createProductionAuth(options: ProductionAuthOptions): AuthBroker
         const claims: AuthClaims = {
           sub: String(payload.sub ?? ""),
           organizationId: String(payload.org ?? ""),
-          role: (payload.role ?? "viewer") as OrgRole,
+          role: (payload.role ?? "viewer") as UserRole,
           exp,
           iat: payload.iat ?? 0,
           jti,
@@ -107,11 +107,11 @@ export function createProductionAuth(options: ProductionAuthOptions): AuthBroker
     },
 
     serializeCookie(broker, token, secure) {
-      return `${broker.cookieName}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${broker.maxAgeSeconds}${secure ? "; Secure" : ""}`;
+      return `${broker.cookieName}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${broker.maxAgeSeconds}${secure ? "; Secure" : ""}`;
     },
 
     clearCookie(broker, secure) {
-      return `${broker.cookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure ? "; Secure" : ""}`;
+      return `${broker.cookieName}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure ? "; Secure" : ""}`;
     },
   };
 }

@@ -212,8 +212,8 @@ export interface AuditEvent {
   id: string;
   organizationId: string | null;
   action: string;
-  actorId: string;
-  actorEmail: string;
+  actorId: string | null;
+  actorEmail: string | null;
   metadata: Record<string, any>;
   createdAt: string;
 }
@@ -354,9 +354,10 @@ export function createPlatformAdminService(db: Db, logger: Logger): PlatformAdmi
       // Audit log
       await db.audit.create({
         organizationId: id,
-        action: `organization.${action}`,
+        action: "ORGANIZATION_UPDATED",
         actorId,
         actorEmail: "platform_admin",
+        ipAddress: null,
         metadata: {
           previousStatus: org.status,
           newStatus: statusMap[action],
@@ -485,9 +486,10 @@ export function createPlatformAdminService(db: Db, logger: Logger): PlatformAdmi
           
           await db.audit.create({
             organizationId: org.id,
-            action: "user.status_changed",
+            action: "ROLE_CHANGED",
             actorId,
             actorEmail: "platform_admin",
+            ipAddress: null,
             metadata: {
               userId: id,
               previousStatus: user.status,
@@ -551,8 +553,8 @@ export function createPlatformAdminService(db: Db, logger: Logger): PlatformAdmi
         },
         subscriptions: {
           total: subscriptions.length,
-          active: subscriptions.filter((s) => s.status === "ACTIVE").length,
-          trial: subscriptions.filter((s) => s.status === "TRIAL").length,
+          active: subscriptions.filter((s) => s.status === "active").length,
+          trial: subscriptions.filter((s) => s.status === "trial").length,
         },
         providers: 0,
         connectors: 0,

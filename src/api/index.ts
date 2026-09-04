@@ -22,14 +22,22 @@ import {
   type ApiErrorCode,
   type ApiRequest,
   type CapabilitiesResponse,
+  type ConnectorControlDto,
+  type ConnectorTestResult,
+  type TenantConnectorControlCenterDto,
+  type TenantUsageFoundationDto,
   type EndSessionDto,
   type HealthResponse,
+  type OrganizationBrandingDto,
+  type PublicBrandingStatusDto,
   type RealtimeEndRequest,
   type RealtimeSessionDto,
   type RequestContext,
+  type TenantCommercialSummaryDto,
   type UsageSummaryDto,
   type VoiceSessionDto,
   type VoiceTurnDto,
+  type WorkspaceBootstrapDto,
 } from "../../shared/contracts";
 import { parseQuery } from "../../shared/validate";
 import { createLogger } from "../../server/lib/observability";
@@ -93,6 +101,15 @@ export interface ApiClient {
   endRealtimeSession(input: RealtimeEndRequest): Promise<ApiResult<{ sessionId: string }>>;
   usage(sessionId?: string | null, signal?: AbortSignal): Promise<ApiResult<UsageSummaryDto>>;
   analytics(signal?: AbortSignal): Promise<ApiResult<AnalyticsSummaryDto>>;
+  tenantCommercialSummary(signal?: AbortSignal): Promise<ApiResult<TenantCommercialSummaryDto>>;
+  usageFoundation(signal?: AbortSignal): Promise<ApiResult<TenantUsageFoundationDto>>;
+  workspaceBootstrap(signal?: AbortSignal): Promise<ApiResult<WorkspaceBootstrapDto>>;
+  branding(signal?: AbortSignal): Promise<ApiResult<OrganizationBrandingDto>>;
+  updateBranding(
+    patch: Partial<Pick<OrganizationBrandingDto, "displayName" | "logoUrl" | "faviconUrl" | "primaryColor" | "accentColor" | "theme">>,
+    signal?: AbortSignal
+  ): Promise<ApiResult<OrganizationBrandingDto>>;
+  publicBrandingStatus(signal?: AbortSignal): Promise<ApiResult<PublicBrandingStatusDto>>;
   sessions(signal?: AbortSignal): Promise<ApiResult<unknown[]>>;
   agent(id: string, signal?: AbortSignal): Promise<ApiResult<AgentDto>>;
   createAgent(input: Record<string, unknown>, signal?: AbortSignal): Promise<ApiResult<AgentDto>>;
@@ -154,6 +171,22 @@ export interface ApiClient {
   ): Promise<ApiResult<{ session: AuthSessionDto }>>;
   logout(signal?: AbortSignal): Promise<ApiResult<{ ok: true }>>;
   me(signal?: AbortSignal): Promise<ApiResult<AuthSessionDto>>;
+  connectorControlCenter(signal?: AbortSignal): Promise<ApiResult<TenantConnectorControlCenterDto>>;
+  createConnector(
+    input: { name: string; provider: string },
+    signal?: AbortSignal
+  ): Promise<ApiResult<ConnectorControlDto>>;
+  updateConnector(
+    id: string,
+    patch: { name?: string; enabled?: boolean },
+    signal?: AbortSignal
+  ): Promise<ApiResult<ConnectorControlDto>>;
+  configureConnectorCredentials(
+    id: string,
+    credentials: Record<string, string>,
+    signal?: AbortSignal
+  ): Promise<ApiResult<{ configured: true }>>;
+  testConnector(id: string, signal?: AbortSignal): Promise<ApiResult<ConnectorTestResult>>;
 }
 
 /* ── local transport (browser-side execution of the server handlers) ──── */
@@ -277,7 +310,7 @@ async function callHttp<T>(
         code: aborted ? "TIMEOUT" : "NETWORK_ERROR",
         message: aborted
           ? "The API did not respond in time."
-          : "The API could not be reached. Falling back to local demo mode.",
+          : "The configured API could not be reached.",
       },
     };
   } finally {
@@ -318,10 +351,13 @@ export function createApiClient(): ApiClient {
         ? run<{ sessionId: string }>("POST", "/api/voice/realtime/end", input)
         : fetch(`${API_BASE_URL}/api/voice/realtime/end`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+              "Content-Type": "application/json",
+              ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+            },
             body: JSON.stringify(input),
             keepalive: true,
-            credentials: "omit",
+            credentials: "include",
           })
             .then(
               (res) =>
@@ -341,6 +377,18 @@ export function createApiClient(): ApiClient {
         signal
       ),
     analytics: (signal) => run<AnalyticsSummaryDto>("GET", "/api/analytics", undefined, signal),
+    tenantCommercialSummary: (signal) =>
+      run<TenantCommercialSummaryDto>("GET", "/api/tenant/subscription", undefined, signal),
+    usageFoundation: (signal) =>
+      run<TenantUsageFoundationDto>("GET", "/api/usage/foundation", undefined, signal),
+    workspaceBootstrap: (signal) =>
+      run<WorkspaceBootstrapDto>("GET", "/api/workspace/bootstrap", undefined, signal),
+    branding: (signal) =>
+      run<OrganizationBrandingDto>("GET", "/api/workspace/branding", undefined, signal),
+    updateBranding: (patch, signal) =>
+      run<OrganizationBrandingDto>("PATCH", "/api/workspace/branding", patch, signal),
+    publicBrandingStatus: (signal) =>
+      run<PublicBrandingStatusDto>("GET", "/api/public/branding", undefined, signal),
     sessions: (signal) => run<unknown[]>("GET", "/api/voice/sessions", undefined, signal),
     agent: (id, signal) => run<AgentDto>("GET", `/api/agents/${encodeURIComponent(id)}`, undefined, signal),
     createAgent: (input, signal) => run<AgentDto>("POST", "/api/agents", input, signal),
@@ -390,6 +438,22 @@ export function createApiClient(): ApiClient {
     deleteAgent: (id, signal) =>
       run<{ id: string; deleted: true }>("DELETE", `/api/agents/${encodeURIComponent(id)}`, {}, signal),
 
+    connectorControlCenter: (signal) =>
+      run<TenantConnectorControlCenterDto>("GET", "/api/connectors/control-center", undefined, signal),
+    createConnector: (input, signal) =>
+      run<ConnectorControlDto>("POST", "/api/connectors", input, signal),
+    updateConnector: (id, patch, signal) =>
+      run<ConnectorControlDto>("PUT", `/api/connectors/${encodeURIComponent(id)}`, patch, signal),
+    configureConnectorCredentials: (id, credentials, signal) =>
+      run<{ configured: true }>(
+        "POST",
+        `/api/connectors/${encodeURIComponent(id)}/credentials`,
+        credentials,
+        signal
+      ),
+    testConnector: (id, signal) =>
+      run<ConnectorTestResult>("POST", `/api/connectors/${encodeURIComponent(id)}/test`, {}, signal),
+
     async register(input, signal) {
       const result = await run<{ session: AuthSessionDto }>("POST", "/api/auth/register", input, signal);
       if (result.ok) {
@@ -421,6 +485,40 @@ export function createApiClient(): ApiClient {
 }
 
 export const api = createApiClient();
+
+/**
+ * Fetch-compatible bridge for feature pages. It preserves cookie/bearer authentication in hosted
+ * mode and executes the same authenticated route handlers in the browser-only demo transport.
+ */
+export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const method = String(init.method ?? "GET").toUpperCase() as "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
+  if (api.transport === "http") {
+    const headers = new Headers(init.headers);
+    if (init.body !== undefined && !headers.has("content-type")) headers.set("content-type", "application/json");
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+    if (sessionToken) headers.set("authorization", `Bearer ${sessionToken}`);
+    return fetch(`${API_BASE_URL}${path}`, { ...init, method, headers, credentials: "include" });
+  }
+
+  let body: unknown = undefined;
+  if (typeof init.body === "string" && init.body.length > 0) {
+    try {
+      body = JSON.parse(init.body);
+    } catch {
+      body = init.body;
+    }
+  } else if (init.body !== undefined && init.body !== null) {
+    body = init.body;
+  }
+  const [pathname, search = ""] = path.split("?");
+  const result = await callLocal<unknown>({ method, path: pathname, query: parseQuery(search), body });
+  const payload = result.ok ? result.data : { error: result.error };
+  return new Response(JSON.stringify(payload), {
+    status: result.ok ? 200 : result.error.code === "UNAUTHENTICATED" ? 401 : result.error.code === "FORBIDDEN" ? 403 : 400,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
 export { API_VERSION, DEMO_AGENT_ID };
 
 /* ── voice mode resolution (the only place that decides demo vs production) ── */

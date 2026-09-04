@@ -38,7 +38,7 @@ export class MockAIEvaluationProvider implements AIEvaluationProviderAdapter {
     return true;
   }
 
-  async evaluate(request: AIEvaluationRequest, config: AIEvaluationConfig): Promise<AIEvaluationResponse> {
+  async evaluate(request: AIEvaluationRequest, _config: AIEvaluationConfig): Promise<AIEvaluationResponse> {
     const startTime = Date.now();
     this.logger.info("mock_ai_evaluation_start", {
       organizationId: request.organizationId,
@@ -83,11 +83,11 @@ export class MockAIEvaluationProvider implements AIEvaluationProviderAdapter {
       });
 
       return response;
-    } catch (error) {
+    } catch {
       this.logger.error("mock_ai_evaluation_error", {
         organizationId: request.organizationId,
         evaluationId: request.evaluationId,
-        error: error instanceof Error ? error.message : String(error),
+        reason: "evaluation_failed",
       });
 
       return {
@@ -97,7 +97,7 @@ export class MockAIEvaluationProvider implements AIEvaluationProviderAdapter {
         provider: this.provider,
         model: "mock-v1",
         latencyMs: Date.now() - startTime,
-        error: error instanceof Error ? error.message : "Unknown error",
+        error: "AI evaluation failed",
       };
     }
   }
@@ -262,7 +262,7 @@ export class MockAIEvaluationProvider implements AIEvaluationProviderAdapter {
  * Create AI Evaluation Provider
  */
 export function createAIEvaluationProvider(
-  provider: AIEvaluationProvider,
+  _provider: AIEvaluationProvider,
   logger: Logger
 ): AIEvaluationProviderAdapter {
   // Currently only mock provider is implemented

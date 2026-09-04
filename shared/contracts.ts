@@ -135,7 +135,7 @@ export interface UserRow extends OrganizationOwned {
   id: string;
   email: string;
   name: string;
-  role: OrgRole;
+  role: UserRole;
   status: UserStatus;
   createdAt: string;
   updatedAt: string;
@@ -148,7 +148,7 @@ export interface UserRow extends OrganizationOwned {
 export interface UserCredential {
   userId: string;
   organizationId: string;
-  role: OrgRole;
+  role: UserRole;
   status: UserStatus;
   passwordHash: string;
 }
@@ -158,7 +158,7 @@ export interface AuthSessionDto {
   organizationId: string;
   email: string;
   name: string;
-  role: OrgRole;
+  role: UserRole;
   organization: { id: string; name: string; slug: string; status: OrgStatus };
   issuedAt: string;
   expiresAt: string;
@@ -481,12 +481,11 @@ export interface TelephonyProviderSummaryDto {
 export interface PlanRow {
   id: string;
   name: string;
+  /** Legacy derived classification for older workspace screens; not persisted or editable plan data. */
   planType: PlanType;
+  status: PlanStatus;
   features: Feature[];
   limits: OrganizationLimits;
-  priceCents: number;
-  interval: string;
-  isActive: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -501,6 +500,18 @@ export interface SubscriptionRow {
   currentPeriodStart: string | null;
   currentPeriodEnd: string | null;
   cancelledAt: string | null;
+  startedAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Per-tenant feature override. Plan features are the baseline; this row is the explicit grant/revoke. */
+export interface OrganizationEntitlementRow {
+  id: string;
+  organizationId: string;
+  feature: Feature;
+  enabled: boolean;
+  reason: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -510,6 +521,7 @@ export interface OrganizationBrandingRow {
   organizationId: string;
   displayName: string | null;
   logoUrl: string | null;
+  faviconUrl: string | null;
   primaryColor: string;
   accentColor: string;
   theme: "light" | "dark" | "auto";
@@ -523,6 +535,9 @@ export type AuditAction =
   | "ORGANIZATION_UPDATED"
   | "SUBSCRIPTION_CREATED"
   | "SUBSCRIPTION_CHANGED"
+  | "PLAN_CREATED"
+  | "PLAN_CHANGED"
+  | "ENTITLEMENT_CHANGED"
   | "FEATURE_ENABLED"
   | "FEATURE_DISABLED"
   | "LIMIT_CHANGED"
@@ -587,7 +602,9 @@ export type AuditAction =
   | "ALERT_ACKNOWLEDGED"
   | "ALERT_RESOLVED"
   | "CONTACT_QUEUED"
-  | "CONTACT_SKIPPED";
+  | "CONTACT_SKIPPED"
+  | "AI_EVALUATION_COMPLETED"
+  | "AI_EVALUATION_FAILED";
 
 export interface AuditEventRow {
   id: string;
@@ -950,6 +967,8 @@ export interface ApiRequest {
   query?: Record<string, string>;
   headers: Record<string, string>;
   body?: unknown;
+  /** Original bytes decoded as UTF-8. Required for cryptographic webhook verification. */
+  rawBody?: string;
 }
 
 export interface ApiResponse {
@@ -968,7 +987,7 @@ export interface RequestContext {
   requestId: string;
   organizationId: string;
   userId: string | null;
-  role: OrgRole;
+  role: UserRole;
   authMode: "demo" | "bearer";
   /**
    * True only when the request actually carried a token or session cookie. Demo Mode's implicit
@@ -1016,6 +1035,10 @@ export type Feature = (typeof FEATURES)[number];
 export const PLAN_TYPES = ["starter", "professional", "enterprise", "custom"] as const;
 export type PlanType = (typeof PLAN_TYPES)[number];
 
+/** Plan publication lifecycle. Archived plans remain valid for existing subscriptions. */
+export const PLAN_STATUSES = ["draft", "active", "archived"] as const;
+export type PlanStatus = (typeof PLAN_STATUSES)[number];
+
 /** Subscription status — Phase 10A */
 export const SUBSCRIPTION_STATUSES = ["active", "trial", "suspended", "cancelled", "past_due"] as const;
 export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
@@ -1039,13 +1062,112 @@ export interface PlanEntitlements {
 export interface SubscriptionDto {
   id: string;
   organizationId: string;
+  planId: string;
+  planName: string;
   planType: PlanType;
   status: SubscriptionStatus;
   entitlements: PlanEntitlements;
   effectiveLimits: OrganizationLimits;
   trialEndsAt: string | null;
+  startedAt: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface TenantCommercialSummaryDto {
+  subscription: SubscriptionDto | null;
+  capabilities: Array<{
+    feature: Feature;
+    enabled: boolean;
+    source: "plan" | "override" | "unavailable";
+  }>;
+  limits: OrganizationLimits;
+  usage: {
+    users: number;
+    agents: number;
+    monthlyMinutes: number;
+    campaigns: number;
+    connectors: number;
+  };
+  billing: { status: "NOT_CONFIGURED"; provider: null };
+}
+
+export type UsageLimitKey = keyof OrganizationLimits;
+
+export interface UsageLimitStateDto {
+  key: UsageLimitKey;
+  used: number;
+  limit: number;
+  remaining: number;
+  reached: boolean;
+}
+
+export interface UsageMetricsDto {
+  voice: {
+    audioSeconds: number;
+    minutes: number;
+    eventCount: number;
+  };
+  sessions: {
+    total: number;
+    active: number;
+    completed: number;
+    failed: number;
+  };
+  calls: {
+    total: number;
+    inbound: number;
+    outbound: number;
+    completed: number;
+    failed: number;
+    durationSeconds: number;
+  };
+  campaigns: {
+    total: number;
+    draft: number;
+    scheduled: number;
+    running: number;
+    completed: number;
+    failed: number;
+    configuredContacts: number;
+    processedContacts: number;
+    completedCalls: number;
+    failedCalls: number;
+  };
+}
+
+export interface TenantUsageFoundationDto {
+  organizationId: string;
+  period: { start: string; end: string; timezone: "UTC" };
+  usage: UsageMetricsDto;
+  limits: Record<UsageLimitKey, UsageLimitStateDto>;
+  entitlements: Array<{
+    feature: Feature;
+    enabled: boolean;
+    source: "plan" | "override" | "unavailable";
+  }>;
+  subscription: { planName: string; status: SubscriptionStatus } | null;
+  billing: {
+    status: "NOT_CONFIGURED";
+    provider: null;
+    invoiceGeneration: "UNAVAILABLE";
+    paymentProcessing: "UNAVAILABLE";
+  };
+  empty: boolean;
+}
+
+export interface PlatformUsageFoundationDto {
+  period: TenantUsageFoundationDto["period"];
+  totals: UsageMetricsDto;
+  byOrganization: Array<{
+    organizationId: string;
+    organizationName: string;
+    usage: UsageMetricsDto;
+    empty: boolean;
+  }>;
+  billing: TenantUsageFoundationDto["billing"];
+  empty: boolean;
+  generatedAt: string;
 }
 
 /** Workspace bootstrap response — Phase 10A */
@@ -1054,7 +1176,7 @@ export interface WorkspaceBootstrapDto {
     id: string;
     email: string;
     name: string;
-    role: OrgRole;
+    role: UserRole;
     isPlatformAdmin: boolean;
   };
   organization: {
@@ -1064,7 +1186,7 @@ export interface WorkspaceBootstrapDto {
     status: OrgStatus;
     branding: OrganizationBrandingDto;
   };
-  subscription: SubscriptionDto;
+  subscription: SubscriptionDto | null;
   entitlements: Feature[];
   permissions: string[];
   limits: OrganizationLimits;
@@ -1075,9 +1197,31 @@ export interface WorkspaceBootstrapDto {
 export interface OrganizationBrandingDto {
   displayName: string;
   logoUrl: string | null;
+  faviconUrl: string | null;
   primaryColor: string;
   accentColor: string;
   theme: "light" | "dark" | "auto";
+  /** Whether values came from a tenant row or safe organization defaults. */
+  source: "tenant" | "fallback";
+  assetStorage: {
+    mode: "external_url";
+    uploads: "not_configured";
+  };
+  customDomain: {
+    status: "not_configured";
+    hostname: null;
+  };
+  /** Pre-auth tenant discovery does not exist without verified custom-domain infrastructure. */
+  loginBranding: {
+    status: "not_configured";
+  };
+}
+
+export interface PublicBrandingStatusDto {
+  resolution: "not_configured";
+  branding: null;
+  customDomain: OrganizationBrandingDto["customDomain"];
+  loginBranding: OrganizationBrandingDto["loginBranding"];
 }
 
 export const DEMO_ORGANIZATION_ID = "org_demo";
@@ -1532,6 +1676,100 @@ export type SyncDirection = "INBOUND" | "OUTBOUND" | "BIDIRECTIONAL";
 export type DataTransformerType = "TRIM" | "LOWERCASE" | "UPPERCASE" | "PHONE_NORMALIZATION" | "DATE_NORMALIZATION" | "NUMBER_NORMALIZATION";
 
 export type ConnectorActivityType = "CONNECTION_TESTED" | "CONNECTOR_ENABLED" | "CONNECTOR_DISABLED" | "SYNC_STARTED" | "SYNC_COMPLETED" | "SYNC_FAILED" | "MAPPING_CHANGED";
+
+/**
+ * The control center intentionally uses one small, provider-independent status vocabulary.
+ * Internal lifecycle states (for example DRAFT or DISABLED) must be normalized before they cross
+ * the control-center API boundary.
+ */
+export const CONTROL_CENTER_STATUSES = [
+  "CONNECTED",
+  "NOT_CONFIGURED",
+  "DEGRADED",
+  "UNAVAILABLE",
+  "UNKNOWN",
+] as const;
+export type ControlCenterStatus = (typeof CONTROL_CENTER_STATUSES)[number];
+
+export interface ConnectorCredentialFieldDto {
+  key: string;
+  label: string;
+  input: "text" | "secret" | "url";
+  required: boolean;
+  /** Safe help copy only. Credential values are never represented by this contract. */
+  description?: string;
+}
+
+export interface ConnectorProviderControlDto {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  type: ConnectorType;
+  status: ControlCenterStatus;
+  capabilities: {
+    connectionTesting: boolean;
+    schemaDiscovery: boolean;
+    inboundSync: boolean;
+    outboundSync: boolean;
+    webhookSupport: boolean;
+    batchOperations: boolean;
+  };
+  supportedObjects: string[];
+  credentialFields: ConnectorCredentialFieldDto[];
+}
+
+export interface ConnectorControlDto {
+  id: string;
+  name: string;
+  provider: string;
+  providerName: string;
+  type: ConnectorType;
+  status: ControlCenterStatus;
+  enabled: boolean;
+  hasCredentials: boolean;
+  connectionTestingSupported: boolean;
+  syncMode: SyncMode;
+  mappingCount: number;
+  lastSyncAt: string | null;
+  lastTestedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TenantConnectorControlCenterDto {
+  providers: ConnectorProviderControlDto[];
+  connectors: ConnectorControlDto[];
+  credentialStorage: "SESSION_ONLY" | "SECURE_EXTERNAL" | "UNAVAILABLE";
+}
+
+export interface TelephonyProviderControlDto {
+  id: string;
+  name: string;
+  kind: "telephony";
+  status: ControlCenterStatus;
+  enabled: boolean;
+  isDefault: boolean;
+  simulation: boolean;
+  transport: "pstn" | "sip" | "webrtc" | "gsm" | "simulation";
+  credentialsConfigured: boolean;
+  webhookConfigured: boolean;
+  capabilities: TelephonyCapabilities;
+  lastHealthCheck: string | null;
+}
+
+export interface PlatformProviderControlCenterDto {
+  telephonyProviders: TelephonyProviderControlDto[];
+  connectorProviders: ConnectorProviderControlDto[];
+  generatedAt: string;
+}
+
+export interface ProviderHealthControlResultDto {
+  providerId: string;
+  status: ControlCenterStatus;
+  latencyMs: number;
+  checkedAt: string;
+}
 
 export interface DataConnectorRow extends OrganizationOwned {
   id: string;
@@ -2306,6 +2544,8 @@ export interface WebhookEventResult {
 
 /** Billing configuration */
 export interface BillingConfig {
+  /** Explicit provider state; no provider means billing mutations fail closed. */
+  status: "NOT_CONFIGURED";
   /** Enable automatic invoice generation */
   autoGenerateInvoices: boolean;
   /** Enable automatic payment processing */

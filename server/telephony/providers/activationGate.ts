@@ -14,7 +14,7 @@
  * If any check fails, activation is rejected with a detailed diagnostic.
  */
 
-import type { AppMode, TelephonyCapabilities } from "../../../../shared/contracts";
+import type { AppMode, TelephonyCapabilities } from "../../../shared/contracts";
 import type { TelephonyProvider } from "../provider";
 import type { ProviderHealthCheckResult } from "./base/ProductionTelephonyProviderBase";
 import type { ProviderCertification } from "./certificationChecklist";
@@ -258,7 +258,7 @@ function checkHealth(config: ActivationGateConfig): ActivationCheck {
  */
 function checkCapabilities(config: ActivationGateConfig): ActivationCheck {
   const provider = config.provider;
-  const caps = provider.info.capabilities;
+  const caps = provider.info.capabilities as Partial<Record<keyof TelephonyCapabilities, boolean>>;
 
   const missingCaps: string[] = [];
   for (const cap of config.requiredCapabilities) {

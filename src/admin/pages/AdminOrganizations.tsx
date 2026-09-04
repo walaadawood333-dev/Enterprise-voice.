@@ -1,3 +1,4 @@
+import { apiFetch } from "@/api";
 /**
  * Admin Organizations — List and manage customer organizations.
  */
@@ -11,7 +12,7 @@ export function AdminOrganizations() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/admin/organizations")
+    apiFetch("/api/admin/organizations")
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
       .then((data) => { setOrgs(Array.isArray(data) ? data : []); setLoading(false); })
       .catch(() => setLoading(false));

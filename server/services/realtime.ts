@@ -255,6 +255,14 @@ export function createRealtimeService(
       // Scoped read: a foreign session id reads as missing, never as someone else's row.
       const session = await db.sessions.get(input.sessionId, input.organizationId);
       if (!session) throw new ApiError("NOT_FOUND", "Voice session not found.");
+      // Repeated client callbacks must not create duplicate metering events.
+      if ((session.status === "completed" || session.status === "failed") && session.endedAt) {
+        return {
+          sessionId: input.sessionId,
+          outcome: session.status,
+          durationSeconds: session.durationSeconds ?? 0,
+        };
+      }
       const closed = await db.sessions.patch(input.sessionId, input.organizationId, {
         status: input.outcome === "failed" ? "failed" : "completed",
         endedAt: new Date().toISOString(),
@@ -270,20 +278,31 @@ export function createRealtimeService(
           ? Math.max(0, Math.min(3600, Math.round(input.durationSeconds * 10) / 10))
           : Math.max(0, Math.round((Date.now() - new Date(closed.startedAt).getTime()) / 100) / 10);
 
-      db.usage.record({
-        organizationId: input.organizationId,
-        sessionId: input.sessionId,
-        eventType: input.outcome === "failed" ? "session_failed" : "session_ended",
-        quantity: 1,
-        // Deliberately excludes any audio, transcript text or provider identifiers.
-        metadata: {
-          outcome: input.outcome,
-          durationSeconds: duration,
-          language: closed.language,
-          agentId: closed.agentId,
-          ...(input.reason ? { reason: sanitizeText(input.reason, 80) } : {}),
-        },
-      });
+      await Promise.all([
+        db.usage.record({
+          organizationId: input.organizationId,
+          sessionId: input.sessionId,
+          eventType: input.outcome === "failed" ? "session_failed" : "session_ended",
+          quantity: 1,
+          // Deliberately excludes any audio, transcript text or provider identifiers.
+          metadata: {
+            outcome: input.outcome,
+            durationSeconds: duration,
+            language: closed.language,
+            agentId: closed.agentId,
+            ...(input.reason ? { reason: sanitizeText(input.reason, 80) } : {}),
+          },
+        }),
+        ...(duration > 0
+          ? [db.usage.record({
+              organizationId: input.organizationId,
+              sessionId: input.sessionId,
+              eventType: "audio_seconds" as const,
+              quantity: duration,
+              metadata: { source: "realtime_session_duration", measured: true },
+            })]
+          : []),
+      ]);
 
       logger.info("realtime_session_ended", {
         organizationId: input.organizationId,

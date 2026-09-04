@@ -42,14 +42,16 @@ export async function checkProviderHealth(
   const started = Date.now();
   const providerId = provider.info.id;
 
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    // Race the availability check against a timeout.
+    // Race the availability check against a timeout and always release the timer afterward.
     const result = await Promise.race([
       runHealthProbe(provider),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("HEALTH_CHECK_TIMEOUT")), timeoutMs)
-      ),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("HEALTH_CHECK_TIMEOUT")), timeoutMs);
+      }),
     ]);
+    if (timeout) clearTimeout(timeout);
 
     const latencyMs = Date.now() - started;
     const status: ProviderHealthStatus = result.healthy ? "healthy" : "degraded";
@@ -66,18 +68,20 @@ export async function checkProviderHealth(
 
     return { providerId, status, latencyMs, checkedAt: new Date().toISOString(), detail };
   } catch (error) {
+    if (timeout) clearTimeout(timeout);
     const latencyMs = Date.now() - started;
     const isTimeout = (error as Error)?.message === "HEALTH_CHECK_TIMEOUT";
     const status: ProviderHealthStatus = isTimeout ? "unavailable" : "degraded";
+    // Adapter exceptions are untrusted and may contain request URLs or credential-derived text.
     const detail = isTimeout
       ? `Health check timed out after ${timeoutMs}ms.`
-      : `Health check failed: ${(error as Error)?.message?.slice(0, 120) ?? "unknown error"}`;
+      : "Provider availability probe failed.";
 
     logger.warn("provider_health_check_failed", {
       providerId,
       status,
       latencyMs,
-      detail,
+      reason: isTimeout ? "timeout" : "probe_error",
     });
 
     return { providerId, status, latencyMs, checkedAt: new Date().toISOString(), detail };

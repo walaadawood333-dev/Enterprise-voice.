@@ -1,6 +1,7 @@
+import { apiFetch } from "@/api";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Users, Plus, Calendar, PhoneCall, CheckCircle, XCircle, Clock } from "lucide-react";
+import { Users, Plus, Calendar, PhoneCall, CheckCircle, XCircle } from "lucide-react";
 import { clsx } from "clsx";
 
 interface Campaign {
@@ -30,7 +31,7 @@ export function CampaignsList() {
   const [showCreate, setShowCreate] = useState(false);
 
   useEffect(() => {
-    fetch("/api/workspace/campaigns")
+    apiFetch("/api/workspace/campaigns")
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
       .then((data) => {
         setCampaigns(data);
@@ -167,7 +168,7 @@ function CreateCampaignModal({
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    fetch("/api/agents")
+    apiFetch("/api/agents")
       .then((r) => (r.ok ? r.json() : []))
       .then(setAgents)
       .catch(() => {});
@@ -178,7 +179,7 @@ function CreateCampaignModal({
     setSubmitting(true);
 
     try {
-      const res = await fetch("/api/workspace/campaigns", {
+      const res = await apiFetch("/api/workspace/campaigns", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

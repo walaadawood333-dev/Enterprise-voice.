@@ -8,6 +8,7 @@ import { useStudio } from "../StudioProvider";
 import { getVoiceMode } from "@/api";
 import { DEMO_AGENTS } from "../data/demoWorkspace";
 import { cn } from "@/utils/cn";
+import { TenantBrandingSettings } from "@/branding/TenantBrandingSettings";
 
 const ROLE_ROWS: Array<[string, string, string]> = [
   ["Owner", "Full workspace control, billing and integrations", "foundation"],
@@ -145,6 +146,8 @@ export function SettingsPage() {
           </p>
         </div>
       </Panel>
+
+      <TenantBrandingSettings />
 
       <div className="grid gap-4 lg:grid-cols-2 lg:gap-5">
         <Panel as="article" className="space-y-4">

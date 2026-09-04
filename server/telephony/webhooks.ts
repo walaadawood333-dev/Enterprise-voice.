@@ -51,33 +51,29 @@ export function verifyWebhook(
     };
   }
 
-  // Replay detection is always enforced regardless of mode.
+  // Rule 1: Demo mode + the internal simulation provider has no external signature. All real
+  // providers are verified below, including replays — knowing an old event id must never become
+  // an authentication bypass.
+  if (!(context.appMode === "demo" && provider.info.simulation)) {
+    const signatureValid = provider.verifyWebhookSignature(context.rawBody, context.headers);
+    if (!signatureValid) {
+      logger.error("webhook_signature_invalid", {
+        provider: provider.info.id,
+      });
+      return {
+        valid: false,
+        reason: "Webhook signature verification failed.",
+        replay: false,
+      };
+    }
+  }
+
+  // A correctly authenticated duplicate is handled idempotently by the gateway.
   if (isReplay) {
     logger.info("webhook_replay_detected", {
       provider: provider.info.id,
     });
-    return {
-      valid: true,  // Still valid, but flagged as replay for idempotent handling
-      replay: true,
-    };
-  }
-
-  // Rule 1: Demo mode + simulation provider → bypass signature check.
-  if (context.appMode === "demo" && provider.info.simulation) {
-    return { valid: true, replay: false };
-  }
-
-  // Rule 3: Production + real provider → cryptographic verification required.
-  const signatureValid = provider.verifyWebhookSignature(context.rawBody, context.headers);
-  if (!signatureValid) {
-    logger.error("webhook_signature_invalid", {
-      provider: provider.info.id,
-    });
-    return {
-      valid: false,
-      reason: "Webhook signature verification failed.",
-      replay: false,
-    };
+    return { valid: true, replay: true };
   }
 
   return { valid: true, replay: false };

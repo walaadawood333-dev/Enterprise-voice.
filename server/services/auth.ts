@@ -9,7 +9,7 @@
  * from the user row, never from a token claim, header or body field.
  */
 
-import type { AuthResult, AuthSessionDto, OrgRole, UserRow } from "../../shared/contracts";
+import type { AuthResult, AuthSessionDto, UserRole, UserRow } from "../../shared/contracts";
 import { sanitizeText, ValidationError, slugify, validateEmail, validateName, validatePassword } from "../../shared/validate";
 import type { Db } from "../db/store";
 import { ApiError, type Logger } from "../lib/observability";
@@ -18,7 +18,7 @@ import type { AuthBroker } from "../http/auth/broker";
 export interface AuthContextExtras {
   userId: string | null;
   organizationId: string;
-  role: OrgRole;
+  role: UserRole;
   /** Set only when a token or session cookie accompanied the request. */
   tokenPresented?: boolean;
 }
@@ -189,7 +189,7 @@ export function createAuthService(
     },
 
     async me(ctx: AuthContextExtras): Promise<AuthSessionDto> {
-      // Demo Mode's implicit tenant is a public-surface fallback, not a signed-in session.
+      // Both demo and production require an explicitly issued session token.
       if (!ctx.userId || !ctx.tokenPresented) {
         throw new ApiError(
           "UNAUTHENTICATED",

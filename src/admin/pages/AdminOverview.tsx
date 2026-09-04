@@ -1,3 +1,4 @@
+import { apiFetch } from "@/api";
 /**
  * Admin Overview — Platform Executive Dashboard
  *
@@ -39,7 +40,7 @@ export function AdminOverview() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch("/api/admin/overview")
+    apiFetch("/api/admin/overview")
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();

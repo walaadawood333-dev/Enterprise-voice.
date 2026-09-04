@@ -391,7 +391,9 @@ export function createQAEvaluationService(db: Db): QAEvaluationService {
         },
       });
 
-      return await this.getEvaluation(organizationId, evaluation.id);
+      const created = await this.getEvaluation(organizationId, evaluation.id);
+      if (!created) throw new Error("Evaluation could not be loaded after creation");
+      return created;
     },
 
     async getEvaluation(organizationId, evaluationId) {
@@ -472,7 +474,7 @@ export function createQAEvaluationService(db: Db): QAEvaluationService {
       const scores = await db.qaScores.listByEvaluation(organizationId, evaluationId);
       const criteria = await db.qaCriteria.listByTemplate(organizationId, evaluation.templateId);
 
-      const { totalScore, passed } = calculateTotalScore(scores, criteria, evaluation);
+      const { totalScore, passed } = calculateTotalScore(scores, criteria);
 
       // Update evaluation
       const updated = await db.qaEvaluations.update(evaluationId, organizationId, {
@@ -629,7 +631,7 @@ export function createQAEvaluationService(db: Db): QAEvaluationService {
         const criterion = finding.criterionId
           ? await db.qaCriteria.get(finding.criterionId, organizationId)
           : null;
-        dtos.push(toFindingDto(finding, criterion));
+        dtos.push(toFindingDto(finding, criterion ?? null));
       }
 
       return dtos;
@@ -643,7 +645,7 @@ export function createQAEvaluationService(db: Db): QAEvaluationService {
         const criterion = finding.criterionId
           ? await db.qaCriteria.get(finding.criterionId, organizationId)
           : null;
-        dtos.push(toFindingDto(finding, criterion));
+        dtos.push(toFindingDto(finding, criterion ?? null));
       }
 
       return dtos;
@@ -657,7 +659,7 @@ export function createQAEvaluationService(db: Db): QAEvaluationService {
         ? await db.qaCriteria.get(finding.criterionId, organizationId)
         : null;
 
-      return toFindingDto(finding, criterion);
+      return toFindingDto(finding, criterion ?? null);
     },
 
     async deleteFinding(organizationId, findingId) {
@@ -853,8 +855,7 @@ function toFindingDto(
  */
 function calculateTotalScore(
   scores: QAEvaluationScoreRow[],
-  criteria: QAEvaluationCriterionRow[],
-  evaluation: QAEvaluationRow
+  criteria: QAEvaluationCriterionRow[]
 ): { totalScore: number; passed: boolean } {
   if (scores.length === 0) {
     return { totalScore: 0, passed: false };
@@ -888,11 +889,10 @@ import type {
   AIEvaluationRequest,
   AIEvaluationResponse,
   AIEvaluationMetrics,
-  MessageRow,
+  AIEvaluationProvider,
 } from "../../shared/contracts";
 import {
   createAIEvaluationProvider,
-  type AIEvaluationProviderAdapter,
 } from "./aiEvaluationProvider";
 
 /**
@@ -1007,12 +1007,12 @@ export function createQAEvaluationServiceExtended(db: Db, logger: any): QAEvalua
         metadata: {
           evaluationId,
           provider: config.provider,
-          model: response.model,
+          ...(response.model ? { model: response.model } : {}),
           success: response.success,
           overallConfidence: response.overallConfidence,
           resultsCount: response.results.length,
           latencyMs: response.latencyMs,
-          error: response.error,
+          error: response.success ? null : "evaluation_failed",
         },
       });
 

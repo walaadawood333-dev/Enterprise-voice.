@@ -14,7 +14,7 @@
  * 7. Provider ACTIVE
  */
 
-import type { TelephonyCapabilities, AppMode } from "../../../../shared/contracts";
+import type { TelephonyCapabilities, AppMode } from "../../../shared/contracts";
 import type { TelephonyProvider } from "../provider";
 import type { ProviderHealthCheckResult } from "./base/ProductionTelephonyProviderBase";
 import type { ProviderErrorCode } from "./errorNormalizer";
@@ -279,7 +279,7 @@ function checkWebhook(config: ReadinessConfig): ReadinessCheck {
  */
 function checkCapabilities(config: ReadinessConfig): ReadinessCheck {
   const provider = config.provider;
-  const caps = provider.info.capabilities;
+  const caps = provider.info.capabilities as Partial<Record<keyof TelephonyCapabilities, boolean>>;
 
   // Check each required capability
   const missingCaps: string[] = [];

@@ -10,7 +10,7 @@ import type {
   ConnectorTestResult,
   ConnectorSchema,
   DataConnectorFieldMappingDto,
-} from "../../shared/contracts";
+} from "../../../shared/contracts";
 
 /**
  * Provider capabilities
@@ -35,6 +35,14 @@ export interface ConnectorProviderInfo {
   type: ConnectorType;
   capabilities: ConnectorProviderCapabilities;
   supportedObjects?: string[];
+  /** Safe field definitions used to render credential forms. Values never enter this metadata. */
+  credentialFields: Array<{
+    key: string;
+    label: string;
+    input: "text" | "secret" | "url";
+    required: boolean;
+    description?: string;
+  }>;
 }
 
 /**

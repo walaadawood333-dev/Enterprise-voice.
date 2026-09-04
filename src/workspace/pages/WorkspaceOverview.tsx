@@ -1,3 +1,4 @@
+import { apiFetch } from "@/api";
 import { useEffect, useState } from "react";
 import { PhoneCall, Bot, Clock, Activity, Users, TrendingUp } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -62,8 +63,8 @@ export function WorkspaceOverview() {
 
   useEffect(() => {
     Promise.all([
-      fetch("/api/workspace/bootstrap").then((r) => (r.ok ? r.json() : null)),
-      fetch("/api/workspace/overview").then((r) => (r.ok ? r.json() : null)),
+      apiFetch("/api/workspace/bootstrap").then((r) => (r.ok ? r.json() : null)),
+      apiFetch("/api/workspace/overview").then((r) => (r.ok ? r.json() : null)),
     ])
       .then(([bootstrapData, overviewData]) => {
         setBootstrap(bootstrapData);

@@ -17,6 +17,7 @@ import type {
 } from "../../shared/contracts";
 import type { Db } from "../db/store";
 import type { EntitlementEngine } from "./entitlements";
+import { resolveBrandingRow } from "./tenantBranding";
 
 export interface WorkspaceBootstrapService {
   /**
@@ -47,10 +48,12 @@ export function createWorkspaceBootstrapService(
       const subscriptionData = await entitlements.getSubscription(organizationId);
 
       // Build subscription DTO
-      const subscription: SubscriptionDto = subscriptionData
+      const subscription: SubscriptionDto | null = subscriptionData
         ? {
             id: subscriptionData.id,
             organizationId: subscriptionData.organizationId,
+            planId: subscriptionData.plan.id,
+            planName: subscriptionData.plan.name,
             planType: subscriptionData.plan.planType,
             status: subscriptionData.status,
             entitlements: {
@@ -59,29 +62,11 @@ export function createWorkspaceBootstrapService(
             },
             effectiveLimits: await entitlements.getEffectiveLimits(organizationId),
             trialEndsAt: subscriptionData.trialEndsAt,
+            startedAt: subscriptionData.startedAt,
             createdAt: subscriptionData.createdAt,
             updatedAt: subscriptionData.updatedAt,
           }
-        : {
-            id: "none",
-            organizationId,
-            planType: "starter",
-            status: "trial",
-            entitlements: {
-              features: ["ai_agents", "voice_calls", "analytics"],
-              limits: {
-                maxUsers: 5,
-                maxAgents: 3,
-                maxMonthlyMinutes: 1000,
-                maxCampaigns: 0,
-                maxConnectors: 1,
-              },
-            },
-            effectiveLimits: await entitlements.getEffectiveLimits(organizationId),
-            trialEndsAt: null,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          };
+        : null;
 
       // Get enabled features
       const enabledFeatures: Feature[] = await entitlements.getEnabledFeatures(organizationId);
@@ -89,23 +74,12 @@ export function createWorkspaceBootstrapService(
       // Get effective limits
       const limits: OrganizationLimits = await entitlements.getEffectiveLimits(organizationId);
 
-      // Get branding
-      const brandingRow = await db.branding.getByOrg(organizationId);
-      const branding: OrganizationBrandingDto = brandingRow
-        ? {
-            displayName: brandingRow.displayName || organization.name,
-            logoUrl: brandingRow.logoUrl,
-            primaryColor: brandingRow.primaryColor,
-            accentColor: brandingRow.accentColor,
-            theme: brandingRow.theme,
-          }
-        : {
-            displayName: organization.name,
-            logoUrl: null,
-            primaryColor: "#000000",
-            accentColor: "#3b82f6",
-            theme: "light",
-          };
+      // Branding is resolved only after the authenticated organization is known. Read-time
+      // sanitization also protects the shell from legacy rows.
+      const brandingRow = enabledFeatures.includes("custom_branding")
+        ? await db.branding.getByOrg(organizationId)
+        : undefined;
+      const branding: OrganizationBrandingDto = resolveBrandingRow(organization, brandingRow);
 
       // Build enabled modules based on features
       const enabledModules = deriveEnabledModules(enabledFeatures);
@@ -220,32 +194,27 @@ function derivePermissions(role: string): string[] {
   permissions.push("view_own_profile");
   permissions.push("view_organization");
 
-  switch (role) {
-    case "owner":
-      permissions.push(
-        "manage_organization",
-        "manage_users",
-        "manage_agents",
-        "manage_subscription",
-        "manage_billing",
-        "manage_branding",
-        "manage_integrations",
-        "view_audit_log"
-      );
-    // Fall through to admin
-    case "admin":
-      permissions.push("manage_users", "manage_agents", "manage_integrations");
-    // Fall through to manager
-    case "manager":
-      permissions.push("manage_agents", "create_campaigns", "view_analytics");
-    // Fall through to operator
-    case "operator":
-      permissions.push("manage_calls", "view_sessions");
-    // Fall through to viewer
-    case "viewer":
-      permissions.push("view_agents", "view_sessions", "view_analytics");
-      break;
+  const roleRank: Record<string, number> = {
+    viewer: 1,
+    operator: 2,
+    manager: 3,
+    admin: 4,
+    owner: 5,
+  };
+  const rank = roleRank[role] ?? 0;
+  if (rank >= 5) {
+    permissions.push(
+      "manage_organization",
+      "manage_subscription",
+      "manage_billing",
+      "manage_branding",
+      "view_audit_log"
+    );
   }
+  if (rank >= 4) permissions.push("manage_users", "manage_integrations");
+  if (rank >= 3) permissions.push("manage_agents", "create_campaigns", "view_analytics");
+  if (rank >= 2) permissions.push("manage_calls", "view_sessions");
+  if (rank >= 1) permissions.push("view_agents", "view_sessions", "view_analytics");
 
   return permissions;
 }

@@ -218,7 +218,8 @@ export function createVoiceService(
   db: Db,
   engine: VoiceEngine,
   agents: ReturnType<typeof createAgentService>,
-  logger: Logger
+  logger: Logger,
+  entitlements: import("./entitlements").EntitlementEngine
 ) {
   const states = new Map<string, { seq: number; characters: number; startedAt: number }>();
 
@@ -248,6 +249,8 @@ export function createVoiceService(
       agentId?: string;
       language: AgentLanguage;
     }): Promise<VoiceSessionDto> {
+      await entitlements.assertFeature(input.organizationId, "voice_calls");
+      await entitlements.assertCurrentLimit(input.organizationId, "maxMonthlyMinutes");
       const agentId = input.agentId || agents.defaultAgentId;
       const agent = await agents.require(input.organizationId, agentId);
       const sessionId = newId("vsn");
@@ -294,6 +297,8 @@ export function createVoiceService(
       sessionId: string;
       utterance?: string;
     }): Promise<VoiceTurnDto> {
+      await entitlements.assertFeature(input.organizationId, "voice_calls");
+      await entitlements.assertCurrentLimit(input.organizationId, "maxMonthlyMinutes");
       const session = await getOwned(input.sessionId, input.organizationId);
       const agent = await db.agents.get(session.organizationId, session.agentId);
       if (!agent) throw notFound("Agent");
@@ -540,8 +545,16 @@ export function createUsageService(db: Db) {
 }
 
 // ─── Phase 10A — Entitlement & Workspace Bootstrap Services ──────────────
-export { createEntitlementEngine, seedDefaultPlans, DEFAULT_PLANS, type EntitlementEngine, type SubscriptionWithPlan } from "./entitlements";
+export { createEntitlementEngine, seedDefaultPlans, DEFAULT_PLANS, ZERO_LIMITS, type EntitlementEngine, type SubscriptionWithPlan } from "./entitlements";
+export { createSaasControlPlaneService, type SaasControlPlaneService } from "./saasControlPlane";
+export {
+  createTenantBrandingService,
+  createExternalUrlBrandingAssetStore,
+  type TenantBrandingService,
+  type BrandingAssetStore,
+} from "./tenantBranding";
 export { createWorkspaceBootstrapService, type WorkspaceBootstrapService } from "./workspace";
+export { createUsageFoundationService, type UsageFoundationService } from "./usageFoundation";
 
 // ─── Phase 10C — Governance Services ─────────────────────────────────────
 export { createComplianceService, type ComplianceService } from "./compliance";
